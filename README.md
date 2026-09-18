@@ -476,4 +476,4 @@ pior caso medido passa de 5 minutos.
 
 ---
 
-Desenvolvido por Rodolfo Almeida · Castanha OS
+Desenvolvido por Valmir Oliveira · Castanha OS
