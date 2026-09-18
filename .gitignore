@@ -1,0 +1,11 @@
+# Segredos reais - nunca versionar. Veja config.example.json para o modelo.
+config.json
+monitorfiscal.key
+.senha-pdv
+known_hosts
+
+# Cache do catalogo PLU: o coletor refaz sozinho se sumir.
+plu-cache.tsv
+
+__pycache__/
+*.pyc

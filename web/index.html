@@ -1,0 +1,2034 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Monitor Fiscal — previa do layout · Castanha OS</title>
+<style>
+/* ===================================================================
+   MONITOR FISCAL DO PDV — PREVIA DO LAYOUT
+   ESTE ARQUIVO NAO VAI PARA O SERVIDOR.
+
+   E uma banca de prova: mesma paleta e mesma convencao do portal do Pulso
+   (pagina unica, sem build), com um SIMULADOR no lugar da leitura real do
+   coletor. Serve para avaliar o desenho no proprio tablet, a 1,5 m, antes
+   de existir back-end.
+
+   Contrato:  docs/projetos/2026-09-02-monitor-fiscal-pdv.md
+   Briefing:  docs/projetos/2026-09-02-monitor-fiscal-frontend.md
+
+   REGRAS QUE O CODIGO PRECISA HONRAR (nao sao estetica):
+   1. So o campo de ESTADO aparece. Nunca texto do visor, nome de operador,
+      matricula, produto ou valor de compra.
+   2. Ausencia de dado tem cor propria. Painel cego nao pode parecer calmo.
+   3. Nao existe botao "resolvido". O episodio fecha quando a autorizacao
+      acontece no caixa.
+   4. Dois relogios distintos: mudou_em (ultima mudanca de visor) e visto_em
+      (ultimo batimento do coletor). So visto_em dispara "sem sinal" — caixa
+      ocioso nao escreve no log, e isso NAO e falha.
+   =================================================================== */
+
+/* Paleta oficial (memoria/marca.md). Verde e ambar NAO existem na paleta da
+   marca: aqui sao semantica funcional de monitoramento, nao selo de oferta.
+   Pintar "tudo certo" de vermelho seria obedecer a marca e mentir para quem
+   opera. O vermelho da marca fica no cabecalho; o de alarme e outro. */
+:root{
+  --castanha:#CC1F1F; --castanha-fundo:#991515;
+  --noite:#1A1008; --cinza-quente:#3D3328;
+  --papel:#FBF8F4; --branco:#fff; --linha:#E7E0D6;
+  --ok:#1F7A4D; --ok-fraco:#E8F5EE;
+  --alerta:#B26A00; --alerta-fraco:#FDF3E2;
+  --falha:#C0261F; --falha-fraco:#FCECEA;
+  --mudo:#9A9086; --mudo-fraco:#F2EEE8;
+
+  --h-topo:56px; --h-rodape:48px;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0; background:var(--papel); color:var(--noite);
+  font-family:"Poppins","Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+  font-size:16px; line-height:1.35;
+  overflow:hidden;
+  -webkit-user-select:none; user-select:none;
+}
+/* Numero que muda a cada segundo precisa de largura fixa por digito, senao
+   treme e rouba atencao a toa. */
+.tab{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+/* ---------- selo de previa: ninguem pode confundir isto com producao ---- */
+#selo-previa{
+  position:fixed; left:50%; top:0; transform:translateX(-50%);
+  z-index:90; background:#1A1008; color:#FBF8F4;
+  font-size:11px; font-weight:700; letter-spacing:1.2px;
+  padding:3px 14px 4px; border-radius:0 0 8px 8px; pointer-events:none;
+}
+
+/* ---------- cabecalho ---------- */
+header{
+  height:var(--h-topo); background:var(--castanha); color:#fff;
+  display:flex; align-items:center; gap:14px; padding:0 20px;
+}
+header h1{margin:0; font-size:clamp(13px, 1.6vw, 19px); font-weight:600; letter-spacing:.2px; white-space:nowrap}
+header .dir{margin-left:auto; display:flex; align-items:center; gap:16px}
+header .frescor{font-size:13px; opacity:.9}
+/* O frescor deixa de ser discreto quando envelhece: o cabecalho tambem pode
+   estar mentindo. */
+header .frescor.velho{opacity:1; font-weight:700; background:#7d0f0f; padding:3px 9px; border-radius:6px}
+header .relogio{font-size:19px; font-weight:600}
+header button{
+  background:rgba(255,255,255,.14); border:0; color:#fff; cursor:pointer;
+  width:40px; height:40px; border-radius:9px; font-size:19px; line-height:1;
+}
+header button.mudo{background:rgba(0,0,0,.28); opacity:.75}
+
+/* ---------- grade: quatro celulas SEMPRE do mesmo tamanho ----------
+   O tamanho constante e o motivo de as posicoes serem fixas. Se a celula em
+   alarme crescesse, a grade refluiria e o fiscal reaprenderia a tela no pior
+   momento possivel. */
+#grade{
+  height:calc(100% - var(--h-topo) - var(--h-rodape));
+  display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+  gap:14px; padding:14px;
+}
+.celula{
+  position:relative; border-radius:14px; overflow:hidden;
+  border:1px solid var(--linha); background:var(--branco);
+  display:flex; flex-direction:column; padding:clamp(10px, 1.6vw, 18px) clamp(12px, 1.8vw, 22px);
+  min-width:0; min-height:0;
+}
+.celula .filete{position:absolute; left:0; right:0; top:0; height:4px; background:var(--ok)}
+/* ---------- tipografia FLUIDA ----------
+   Tamanho fixo em px estourou a celula num tablet menor que os 1280x800 de
+   referencia: "PRECISA DE VOCE" e o cronometro sairam pela borda. Agora tudo
+   escala com a largura da tela, com piso e teto. O piso garante leitura a
+   1,5 m; o teto impede que num monitor grande a fonte fique absurda. */
+.celula .linha-topo{display:flex; align-items:flex-start; gap:12px; min-width:0}
+.celula .pdv{
+  font-size:clamp(30px, 5vw, 58px); font-weight:700; line-height:1;
+  letter-spacing:-1px; flex:0 0 auto;
+}
+.celula .estado{
+  margin-left:auto; font-size:clamp(14px, 1.9vw, 27px); font-weight:600;
+  text-transform:uppercase; letter-spacing:.5px; color:var(--cinza-quente);
+  padding-top:6px; text-align:right; min-width:0; line-height:1.15;
+}
+.celula .miolo{flex:1; display:flex; align-items:center; justify-content:center; min-height:0}
+.celula .rodape-celula{
+  display:flex; align-items:flex-end; gap:10px;
+  font-size:clamp(12px, 1.4vw, 18px); color:var(--cinza-quente); min-width:0;
+}
+.celula .rodape-celula .dir{margin-left:auto}
+
+/* ---------- semaforo do caixa (decisao do Rodolfo, 02/09) ----------
+   VERDE  = livre, esperando cliente
+   AMBAR  = venda em andamento
+   VERMELHO = chamado de fiscal (a escada mais abaixo)
+
+   O ambar e TERROSO de proposito. Ambar costuma significar "atencao", e aqui
+   significa "vendendo": puxado para o escuro ele fica longe do vermelho mais
+   claro da escada de alerta (#E8443A), que e o unico tom que poderia se
+   confundir com ele a 1,5 m. E a palavra vai sempre junto da cor. */
+.celula.livre{background:#1F7A4D; color:#fff; border-color:transparent}
+.celula.livre .estado{color:rgba(255,255,255,.9)}
+.celula.livre .filete{background:#fff; opacity:.4}
+.celula.livre .rodape-celula{color:rgba(255,255,255,.85)}
+
+/* #ff9700 escolhido pelo Rodolfo. Texto ESCURO, nao branco: branco sobre esse
+   laranja da 2:1 de contraste e some sob a luz da loja; o Castanho Noite da
+   quase 9:1. A cor e a pedida, a legibilidade e que foi corrigida. */
+.celula.atendendo{background:#ff9700; color:var(--noite); border-color:transparent}
+.celula.atendendo .estado{color:rgba(26,16,8,.82)}
+.celula.atendendo .filete{background:var(--noite); opacity:.28}
+.celula.atendendo .rodape-celula{color:rgba(26,16,8,.75)}
+
+/* ---------- modo CHAMANDO: escada de vermelho ----------
+   Decisao do Rodolfo em 02/09: o chamado nasce JA vermelho e vai escurecendo
+   com o tempo, piscando. Nao ha mais degrau ambar.
+
+   A escada usa os tres vermelhos OFICIAIS da marca, em ordem de profundidade,
+   mais um quarto tom fora do manual para o estouro da meta:
+     n0  Vermelho Vivo      #E8443A   acabou de chamar
+     n1  Vermelho Castanha  #CC1F1F   a cor primaria da marca
+     n2  Vermelho Fundo     #991515   variacao escura do manual
+     n3  #6B0E0E                      meta de 60 s violada
+
+   O pisca ACELERA junto: 2,2 s no comeco, 0,6 s no estouro. A urgencia fica
+   em duas dimensoes (cor e ritmo) em vez de so uma, porque quatro tons de
+   vermelho sozinhos sao dificeis de separar sob reflexo de loja. */
+.celula.chamando{color:#fff; border-color:transparent}
+.celula.chamando .estado{color:rgba(255,255,255,.85)}
+.celula.chamando .filete{background:#fff; opacity:.45}
+.celula.chamando .rodape-celula{color:rgba(255,255,255,.88)}
+
+.celula.n0{background:#E8443A}
+.celula.n1{background:#CC1F1F}
+.celula.n2{background:#991515}
+.celula.n3{background:#6B0E0E}
+
+@keyframes respira{0%,100%{opacity:1}50%{opacity:.62}}
+.celula.n0{animation:respira 2.2s ease-in-out infinite}
+.celula.n1{animation:respira 1.4s ease-in-out infinite}
+.celula.n2{animation:respira 0.9s ease-in-out infinite}
+.celula.n3{animation:respira 0.6s ease-in-out infinite}
+/* Quem tem sensibilidade a movimento perde o pisca, nunca a informacao:
+   a cor e o cronometro continuam de pe. */
+@media (prefers-reduced-motion:reduce){ .celula.chamando{animation:none} }
+
+/* modo FORA DE OPERACAO — CLOSED e Z. Nao e problema e nao pode parecer. */
+.celula.inativo{background:var(--mudo-fraco); border-color:var(--linha); color:var(--mudo)}
+.celula.inativo .estado{color:var(--mudo)}
+.celula.inativo .filete{background:var(--mudo); opacity:.45}
+.celula.inativo .rodape-celula{color:var(--mudo)}
+
+/* ---------- modo FALHA DE EQUIPAMENTO ----------
+   Impressora desligada, sem papel, cabo solto. Descoberto em 09/09: o Valmir
+   desligou a impressora do 224 e o painel ficou AMBAR "iniciando", porque o
+   estado da maquina nao muda -- so o texto do visor muda. Ver FALHAS_PADRAO
+   no coletor.
+
+   VERMELHO, como o chamado -- pedido do Valmir, e a razao e boa: o fiscal nao
+   deve ter de aprender uma cor nova. Vermelho ja quer dizer "va ate la agora",
+   e uma impressora morta quer dizer exatamente isso.
+
+   O que separa as duas telas nao e a cor, e a FAIXA DIAGONAL mais o texto. A
+   acao e outra: no chamado alguem autoriza e a fila anda; na falha alguem tem
+   de por papel ou chamar a TI, e autorizar nao resolve nada. Sem essa
+   diferenca o fiscal chegaria no caixa preparado para a coisa errada.
+
+   O tom e o --falha da paleta, que ja existia para exatamente este sentido, e
+   nao um dos quatro degraus da escada de chamado -- assim nao se confunde com
+   "faz tanto tempo que esta chamando". */
+.celula.falha{
+  background:var(--falha); color:#fff; border-color:transparent;
+  background-image:repeating-linear-gradient(135deg,
+    rgba(0,0,0,.16) 0px, rgba(0,0,0,.16) 16px,
+    rgba(0,0,0,0)  16px, rgba(0,0,0,0)  32px);
+}
+.celula.falha .estado{color:rgba(255,255,255,.88)}
+.celula.falha .filete{background:#fff; opacity:.55}
+.celula.falha .rodape-celula{color:rgba(255,255,255,.9)}
+.celula.falha .item-linha{background:rgba(255,255,255,.18)}
+/* pisca no mesmo ritmo do primeiro degrau do chamado: presente, sem competir */
+.celula.falha{animation:respira 2.2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){ .celula.falha{animation:none} }
+.falha-titulo{
+  font-size:clamp(15px, 2.2vw, 30px); font-weight:700; letter-spacing:.4px;
+  text-transform:uppercase; line-height:1.1;
+}
+/* Papel acabando: legivel, mas sem virar alarme. Fica no rodape da celula,
+   onde ja moram os avisos que nao exigem correr. */
+.papel-baixo{
+  font-weight:700; background:var(--alerta-fraco); color:#6B4200;
+  padding:2px 9px; border-radius:99px; white-space:nowrap;
+}
+.celula.livre .papel-baixo, .celula.atendendo .papel-baixo{opacity:.95}
+
+.falha-linha{
+  margin-top:6px; font-size:clamp(12px, 1.5vw, 19px); font-weight:600;
+  opacity:.95; line-height:1.3;
+}
+
+/* ---------- modo CONGELADO ----------
+   A fiscal congelou o caixa de proposito. Azul: nao e alarme nem quebra, e um
+   estado que ELA criou e que precisa lembrar de desfazer. */
+.celula.congelado{background:#1E4F8F; color:#fff; border-color:transparent}
+.celula.congelado .estado{color:rgba(255,255,255,.88)}
+.celula.congelado .filete{background:#fff; opacity:.55}
+.celula.congelado .rodape-celula{color:rgba(255,255,255,.9)}
+.celula.congelado .item-linha{background:rgba(255,255,255,.18)}
+
+/* ---------- modo ALCOOL NO VALE ----------
+   Bebida alcoolica na cesta e o cliente tocou em vale refeicao/alimentacao.
+   Vermelho CHEIO, sem a faixa diagonal da falha e piscando no dobro do ritmo:
+   nao e maquina quebrada, e um pagamento que vai sair em segundos. */
+.celula.alcool_vale{
+  background:var(--falha); color:#fff; border-color:transparent;
+  animation:respira 1.1s ease-in-out infinite;
+}
+.celula.alcool_vale .estado{color:rgba(255,255,255,.88)}
+.celula.alcool_vale .filete{background:#fff; opacity:.55}
+.celula.alcool_vale .rodape-celula{color:rgba(255,255,255,.9)}
+@media (prefers-reduced-motion:reduce){ .celula.alcool_vale{animation:none} }
+.alcool-itens{margin-top:10px; display:flex; flex-direction:column; gap:5px; align-items:center}
+.alcool-itens span{
+  background:#fff; color:var(--falha); font-weight:700; border-radius:6px;
+  padding:3px 10px; font-size:clamp(12px, 1.6vw, 20px); line-height:1.25;
+}
+
+/* ---------- modo TELA PARADA ----------
+   A maquina RESPONDE, mas o visor nao muda ha muito tempo. Aprendido em
+   producao: o 224 ficou preso em "Reducao pendente / TECLE ENTRA" esperando
+   alguem apertar Enter. Nem toda tela reescreve a cada segundo, entao isto
+   NAO e o mesmo que "sem sinal" e nao pode usar a mesma aparencia.
+   Fica informativo por enquanto -- listra de atencao, sem virar vermelho --
+   ate a gente medir quantas vezes por dia acontece em operacao normal. */
+.celula.parado{
+  background:#ff9700; color:var(--noite); border-color:transparent;
+  background-image:repeating-linear-gradient(135deg,
+    rgba(0,0,0,.10) 0px, rgba(0,0,0,.10) 14px,
+    rgba(0,0,0,0)  14px, rgba(0,0,0,0)  28px);
+}
+.celula.parado .estado{color:rgba(26,16,8,.82)}
+.celula.parado .filete{background:var(--noite); opacity:.45}
+.celula.parado .rodape-celula{color:rgba(26,16,8,.78)}
+.celula.parado .aviso-cego{
+  font-size:clamp(14px, 1.9vw, 20px); font-weight:700;
+  background:rgba(255,255,255,.9); padding:8px 14px; border-radius:8px;
+}
+
+/* modo SEM SINAL — a tela admitindo que esta cega naquele caixa.
+   Visualmente distinto TANTO de "tudo certo" QUANTO de alarme. */
+.celula.semsinal{
+  color:var(--cinza-quente); border-color:var(--mudo);
+  background:repeating-linear-gradient(135deg,
+    #EDE7DF 0px,#EDE7DF 12px,#E2DAD0 12px,#E2DAD0 24px);
+}
+.celula.semsinal .estado{color:var(--cinza-quente)}
+.celula.semsinal .estado .velho{font-size:19px; font-weight:500; opacity:.72; font-style:italic; text-transform:none}
+.celula.semsinal .filete{
+  background:repeating-linear-gradient(90deg,#1A1008 0,#1A1008 10px,#FBF8F4 10px,#FBF8F4 20px);
+  height:6px;
+}
+.celula.semsinal .aviso-cego{
+  font-size:17px; font-weight:600; background:rgba(255,255,255,.78);
+  padding:6px 12px; border-radius:8px;
+}
+
+/* o cronometro e o heroi da tela: e ele que faz a pessoa andar */
+.crono{
+  font-size:clamp(28px, 5vw, 62px); font-weight:700; line-height:.92;
+  letter-spacing:-2px; white-space:nowrap;
+}
+.celula.n2 .crono{font-size:clamp(30px, 5.4vw, 68px)}
+.celula.n3 .crono{font-size:clamp(32px, 5.8vw, 74px)}
+/* Reduzido depois do teste em campo: a 2,6vw a frase competia com o
+   cronometro, que e quem tem de dominar a celula. O texto diz O QUE e; o
+   numero diz a URGENCIA, e e ele que faz a pessoa andar. */
+.chamado{
+  font-size:clamp(13px, 1.8vw, 24px); font-weight:700; letter-spacing:.3px;
+  text-transform:uppercase; line-height:1.1; opacity:.92;
+}
+/* ---------- a cesta da sessao ----------
+   A lista aparece abaixo do cronometro: ela diz O QUE esta acontecendo, mas
+   quem faz a pessoa andar continua sendo o tempo.
+
+   Era uma linha so ("ultimo item: X"). Virou lista a pedido do Valmir (07/09),
+   e a razao e boa: com um item so o fiscal ve o que o cliente acabou de passar
+   e nao ve o que ele ja tinha passado -- numa divergencia de peso e justamente
+   o item ANTERIOR que costuma explicar o problema.
+
+   Mais recente NO TOPO e destacado. Quando nao cabe tudo, o que sai e o mais
+   antigo: a lista corta pelo lado que o fiscal ja leu. */
+.cesta{
+  margin-top:8px; width:100%; min-width:0;
+  display:flex; flex-direction:column; min-height:0; max-height:100%;
+  /* Cesta pequena fica CENTRADA como todo o resto do miolo; cesta grande
+     preenche e rola. Sem isto, tres itens numa celula alta ficavam colados no
+     topo com um vazio enorme embaixo -- parecia defeito de renderizacao, e
+     quebrava o unico alinhamento que a tela tem. Nao corta em cima: quem
+     rola e a lista interna, que encolhe ate caber. */
+  justify-content:center;
+}
+/* A LISTA ROLA. Com a cesta inteira na tela, um cliente de 20 itens estouraria
+   a celula -- e cortar em "+N antes" escondia justamente o comeco da compra.
+   Aqui nada e escondido: o que nao cabe desce na barra.
+   `overscroll-behavior:contain` para o dedo do fiscal nao arrastar a PAGINA
+   junto quando a lista chega ao fim. */
+.lista-itens{
+  display:flex; flex-direction:column; gap:4px; text-align:left;
+  min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding-right:4px; -webkit-overflow-scrolling:touch;
+}
+/* A barra fica SEMPRE VISIVEL e RESERVA ESPACO, em vez de so aparecer durante
+   o arrasto: a barra flutuante do Android some sozinha, e uma lista rolavel
+   com cara de lista cortada e pior que uma lista cortada -- o fiscal nao
+   descobre que ha mais item embaixo.
+
+   🔴 `scrollbar-width` NAO PODE ENTRAR JUNTO. Do Chrome 121 em diante a
+   propriedade padrao DESLIGA os pseudo-elementos -webkit- e a barra volta a
+   ser flutuante. Medido nesta pagina com as duas declaradas:
+   offsetWidth - clientWidth = 0, ou seja, nenhum espaco reservado. Por isso a
+   versao padrao fica isolada no @supports, para quem nao tem os
+   pseudo-elementos (Firefox). */
+.lista-itens::-webkit-scrollbar{width:10px}
+.lista-itens::-webkit-scrollbar-track{background:rgba(255,255,255,.15); border-radius:99px}
+.lista-itens::-webkit-scrollbar-thumb{background:rgba(255,255,255,.55); border-radius:99px}
+@supports not selector(::-webkit-scrollbar){
+  .lista-itens{
+    scrollbar-width:thin;
+    scrollbar-color:rgba(255,255,255,.55) rgba(255,255,255,.15);
+  }
+}
+.item-linha{
+  display:flex; gap:8px; align-items:baseline; min-width:0;
+  flex:0 0 auto;   /* nao encolhe: quem cede e a rolagem, nao a altura da linha */
+  background:rgba(255,255,255,.16); border-radius:8px; padding:5px 11px;
+  font-size:clamp(12px, 1.5vw, 19px); font-weight:600; opacity:.88;
+}
+.item-linha .q{
+  flex:0 0 auto; font-weight:700; opacity:.95; font-variant-numeric:tabular-nums;
+}
+/* 🔴 A DESCRICAO QUEBRA, NAO E CORTADA.
+   Antes era `white-space:nowrap` + reticencias. Com o tablet EM PE a celula
+   fica com metade da largura e "REFRIG.COCA COLA 1LT" virava
+   "REFRIG.COCA CO..." -- o que a reticencia comia era o tamanho e a unidade,
+   que e exatamente o que distingue um item do outro na prateleira. */
+.item-linha .d{
+  min-width:0; line-height:1.18;
+  overflow-wrap:break-word;      /* quebra no espaco; parte a palavra so se ela
+                                    sozinha nao couber na largura */
+  /* teto de duas linhas: uma descricao gigante nao pode empurrar o resto da
+     lista (e o botao Liberar) para fora da celula */
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+  overflow:hidden;
+}
+.item-linha.nova{opacity:1; font-weight:700; background:rgba(255,255,255,.30)}
+.item-mais{font-size:clamp(11px, 1.2vw, 15px); font-weight:600; opacity:.75; padding:1px 5px}
+
+/* EM ALARME a prioridade e cronometro > botao Liberar > lista. Numa celula
+   baixa (tablet pequeno em pe, com as descricoes ocupando duas linhas cada) a
+   lista crescia e empurrava o botao para fora -- o mesmo defeito que o
+   cronometro de 16 digitos ja tinha causado uma vez. Aqui quem cede espaco e
+   a lista, que e contexto, e nunca o botao, que e acao: ela para de crescer e
+   passa a rolar. */
+.celula.chamando .lista-itens,
+.celula.aguardando .lista-itens{max-height:8.6em}
+
+/* Em VENDA a cesta e o unico conteudo do miolo, entao ela ocupa a altura toda
+   que sobrar e rola dentro dela. `stretch` no lugar do `center` herdado e o
+   que da altura definida ao filho -- sem isso o `overflow-y` nao teria contra
+   o que rolar e a lista simplesmente vazaria para fora da celula. */
+.miolo.miolo-cesta{align-items:stretch}
+
+/* Celulas de fundo CLARO (ambar): o veu branco some sobre laranja, inverte. */
+.celula.atendendo .item-linha,
+.celula.aguardando .item-linha,
+.celula.parado    .item-linha{background:rgba(0,0,0,.13)}
+.celula.atendendo .item-linha.nova,
+.celula.aguardando .item-linha.nova,
+.celula.parado    .item-linha.nova{background:rgba(0,0,0,.22)}
+@supports not selector(::-webkit-scrollbar){
+  .celula.atendendo .lista-itens,
+  .celula.aguardando .lista-itens,
+  .celula.parado    .lista-itens{scrollbar-color:rgba(0,0,0,.45) rgba(0,0,0,.12)}
+}
+.celula.atendendo .lista-itens::-webkit-scrollbar-track,
+.celula.aguardando .lista-itens::-webkit-scrollbar-track,
+.celula.parado    .lista-itens::-webkit-scrollbar-track{background:rgba(0,0,0,.12)}
+.celula.atendendo .lista-itens::-webkit-scrollbar-thumb,
+.celula.aguardando .lista-itens::-webkit-scrollbar-thumb,
+.celula.parado    .lista-itens::-webkit-scrollbar-thumb{background:rgba(0,0,0,.45)}
+/* ---------- modo AGUARDANDO: chamado de rotina ----------
+   Mesma cor da venda (ambar), porque nao ha nada errado -- mas com o rotulo e
+   um contador, para nao ficar invisivel. Vira vermelho sozinho se ninguem
+   atender. */
+.celula.aguardando{background:#ff9700; color:var(--noite); border-color:transparent}
+.celula.aguardando .estado{color:rgba(26,16,8,.82)}
+.celula.aguardando .filete{background:var(--noite); opacity:.28}
+.celula.aguardando .rodape-celula{color:rgba(26,16,8,.75)}
+.celula.aguardando .chamado{opacity:.8}
+.crono-leve{
+  font-size:clamp(24px, 4vw, 46px); font-weight:700; line-height:1;
+  letter-spacing:-1px; white-space:nowrap;
+}
+
+/* No ambar a lista e o unico conteudo do miolo, entao pode respirar um pouco
+   mais -- mas sem virar manchete: venda normal nao e evento. */
+.celula.atendendo .cesta{margin-top:0}
+.celula.atendendo .item-linha{font-size:clamp(13px, 1.7vw, 21px)}
+
+/* Botao que abre o console de supervisor DA MAQUINA que esta chamando.
+   Alvo de 48 px porque e dedo, andando. Ele nao executa nada -- abre a tela
+   onde ela entra com o login dela -- entao toque sem querer e inofensivo. */
+.liberar{
+  display:inline-block; margin-top:12px; min-height:48px; line-height:34px;
+  padding:7px 22px; border-radius:10px; text-decoration:none;
+  font-size:clamp(13px, 1.7vw, 20px); font-weight:700; letter-spacing:.3px;
+  background:#fff; color:var(--falha); border:2px solid rgba(255,255,255,.55);
+}
+.celula.parado .liberar{background:var(--noite); color:#fff; border-color:rgba(0,0,0,.25)}
+
+/* ---------- faixa de rodape: os outros 9 caixas ----------
+   O fiscal ve 4 de 13. Sem esta faixa a tela fica calma mentindo.
+   O espaco e reservado sempre, para a grade nao pular quando ela aparece. */
+#rodape{
+  height:var(--h-rodape); display:flex; align-items:center; gap:10px;
+  padding:0 20px; font-size:clamp(12px, 1.4vw, 16px); border-top:1px solid var(--linha);
+  background:var(--mudo-fraco); color:var(--mudo);
+}
+#rodape.tem{background:var(--alerta-fraco); color:#6B4200; font-weight:600}
+#rodape .cobertura{margin-left:auto; font-size:13px; font-weight:400; opacity:.85}
+/* A assinatura fica discreta de proposito: e credito, nao informacao de
+   operacao, e nao pode disputar atencao com o alerta. */
+#rodape .assina{font-size:12px; font-weight:400; opacity:.6; padding-left:18px;
+  border-left:1px solid rgba(0,0,0,.12); margin-left:18px; white-space:nowrap}
+
+/* ---------- Tela B: escolher os caixas ---------- */
+#telaB{position:fixed; inset:0; background:var(--papel); z-index:60; display:none; flex-direction:column}
+#telaB.on{display:flex}
+#telaB .topoB{
+  height:72px; display:flex; align-items:center; gap:16px; padding:0 20px;
+  border-bottom:1px solid var(--linha); background:var(--branco); flex:0 0 auto;
+}
+#telaB h2{margin:0; font-size:24px; font-weight:600}
+#telaB .contador{margin-left:auto; font-size:15px; font-weight:600; color:var(--cinza-quente);
+  background:var(--mudo-fraco); padding:7px 14px; border-radius:999px}
+#telaB .lista{flex:1; overflow-y:auto; padding:16px 20px;
+  display:grid; grid-template-columns:1fr 1fr; gap:12px; align-content:start}
+#telaB .nota{
+  grid-column:1/-1; font-size:14px; color:#6B4200; background:var(--alerta-fraco);
+  border:1px solid #F0DDBB; border-radius:10px; padding:10px 14px; line-height:1.4;
+}
+#telaB .item{
+  display:flex; align-items:center; gap:14px; background:var(--branco);
+  border:1px solid var(--linha); border-radius:12px; padding:14px 18px; cursor:pointer;
+}
+#telaB .item.sel{border-color:var(--castanha); box-shadow:inset 0 0 0 1px var(--castanha)}
+#telaB .item .n{font-size:30px; font-weight:700; min-width:74px}
+#telaB .item .e{font-size:15px; text-transform:uppercase; letter-spacing:.5px; color:var(--cinza-quente)}
+#telaB .item .ordem{margin-left:auto; font-size:13px; color:var(--mudo)}
+/* alvo de toque de 48 px: e um dedo, andando */
+#telaB .box{
+  margin-left:auto; width:48px; height:48px; border-radius:10px; flex:0 0 auto;
+  border:2px solid var(--linha); display:flex; align-items:center; justify-content:center;
+  font-size:24px; color:transparent;
+}
+#telaB .item.sel .box{background:var(--castanha); border-color:var(--castanha); color:#fff}
+#telaB .item.sel .ordem{color:var(--castanha); font-weight:700}
+/* ---------- Tela B: acoes na maquina ---------- */
+#telaB .lista{grid-template-columns:1fr}
+#telaB .item .ordem{font-size:26px; color:var(--mudo); margin-left:auto}
+.acao{
+  background:var(--branco); border:1px solid var(--linha); border-radius:12px;
+  padding:14px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+}
+.acao-txt{flex:1; min-width:180px}
+.acao-nome{font-size:17px; font-weight:700}
+.acao-diz{font-size:13px; color:var(--cinza-quente); margin-top:3px; line-height:1.4}
+.acao-btn{
+  flex:0 0 auto; min-height:56px; min-width:150px; border:0; border-radius:10px;
+  background:var(--castanha); color:#fff; font-size:16px; font-weight:700;
+  font-family:inherit; cursor:pointer;
+}
+/* O destrutivo NAO usa a mesma cor do comum: cor igual para acoes de
+   consequencia diferente e como o painel pede para alguem errar. */
+.acao.perigo{border-color:#F0C9C6; background:var(--falha-fraco)}
+.acao.perigo .acao-btn{background:var(--falha)}
+.acao.confirmando{box-shadow:inset 0 0 0 2px var(--castanha)}
+.acao-conf{
+  flex:1 1 100%; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  border-top:1px dashed var(--linha); margin-top:10px; padding-top:12px;
+  font-size:15px; font-weight:600;
+}
+.acao-conf span{flex:1; min-width:180px}
+.acao-conf button{
+  min-height:52px; min-width:96px; border:0; border-radius:10px;
+  font-size:16px; font-weight:700; font-family:inherit; cursor:pointer;
+}
+.acao-conf .nao{background:var(--mudo-fraco); color:var(--noite)}
+.acao-conf .sim{background:var(--falha); color:#fff}
+#telaPin{
+  position:fixed; inset:0; z-index:100; background:var(--papel);
+  display:flex; align-items:center; justify-content:center; padding:20px;
+}
+#telaPin.off{display:none}
+#telaPin .pin-caixa{
+  width:100%; max-width:340px; background:var(--branco);
+  border:1px solid var(--linha); border-radius:16px; padding:22px;
+}
+#telaPin h2{margin:0; font-size:22px; font-weight:600; text-align:center}
+#telaPin .pin-sub{
+  margin:6px 0 14px; text-align:center; font-size:14px; color:var(--cinza-quente);
+}
+.pin-visor{
+  font-size:34px; letter-spacing:10px; text-align:center; font-weight:700;
+  min-height:44px; color:var(--noite);
+}
+.pin-visor .vazio{color:var(--mudo); letter-spacing:8px}
+.pin-erro{text-align:center; color:var(--falha); font-weight:600; font-size:14px}
+.pin-teclas{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
+.pin-t{
+  min-height:62px; border:1px solid var(--linha); border-radius:12px;
+  background:var(--branco); font-size:24px; font-weight:700;
+  font-family:inherit; cursor:pointer; color:var(--noite);
+}
+.pin-t.apaga{font-size:22px; background:var(--mudo-fraco)}
+.pin-t.ok{background:var(--castanha); color:#fff; border-color:transparent}
+
+.volume-cartao{flex-direction:column; align-items:stretch}
+.vol-linha{display:flex; align-items:center; gap:14px; width:100%; margin-top:4px}
+.vol-linha input[type=range]{flex:1; height:44px}
+.vol-num{
+  flex:0 0 auto; min-width:76px; text-align:right; font-size:22px;
+  font-weight:700; font-variant-numeric:tabular-nums;
+}
+.acao-resposta{font-size:15px; font-weight:600; padding:6px 2px; min-height:24px}
+.acao-resposta.bom{color:var(--ok)}
+.acao-resposta.ruim{color:var(--falha)}
+
+#telaB .rodapeB{
+  flex:0 0 auto; height:84px; display:flex; align-items:center; gap:16px; padding:0 20px;
+  border-top:1px solid var(--linha); background:var(--branco);
+}
+#telaB .rodapeB .dica{font-size:15px; color:var(--cinza-quente)}
+#telaB .rodapeB button{
+  margin-left:auto; background:var(--castanha); color:#fff; border:0; cursor:pointer;
+  font-size:18px; font-weight:600; padding:16px 30px; border-radius:12px;
+  font-family:inherit;
+}
+#telaB .rodapeB button:disabled{background:var(--mudo); cursor:not-allowed}
+
+/* ---------- Tela C: variante em avaliacao (takeover) ---------- */
+#telaC{
+  /* o takeover so aparece acima de 60 s, entao nasce no tom mais escuro da
+     escada e no ritmo mais rapido */
+  position:fixed; inset:0; background:#6B0E0E; color:#fff; z-index:70;
+  display:none; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+  animation:respira 0.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion:reduce){ #telaC{animation:none} }
+#telaC.on{display:flex}
+#telaC .pdvC{font-size:120px; font-weight:700; line-height:1}
+#telaC .msgC{font-size:44px; font-weight:700; text-transform:uppercase; letter-spacing:1px}
+#telaC .cronoC{font-size:190px; font-weight:700; line-height:.9; letter-spacing:-4px}
+#telaC .estC{font-size:22px; letter-spacing:2px; text-transform:uppercase; opacity:.8; margin-top:8px}
+#telaC .voltaC{
+  position:absolute; left:20px; top:20px; background:rgba(0,0,0,.22); color:#fff;
+  border:0; border-radius:10px; padding:12px 18px; font-size:16px; cursor:pointer;
+  font-family:inherit;
+}
+
+/* ---------- banca de prova: SO existe nesta previa ---------- */
+#banca{
+  position:fixed; right:12px; bottom:calc(var(--h-rodape) + 12px); z-index:80;
+  background:rgba(26,16,8,.93); color:#fff; border-radius:12px; padding:10px;
+  font-size:12px; max-width:260px;
+}
+#banca h4{margin:0 0 8px; font-size:11px; letter-spacing:1.2px; text-transform:uppercase; opacity:.7}
+#banca button{
+  display:block; width:100%; margin-bottom:5px; background:#3D3328; color:#fff;
+  border:0; border-radius:7px; padding:8px 10px; font-size:12px; cursor:pointer;
+  text-align:left; font-family:inherit;
+}
+#banca button:hover{background:#544737}
+#banca .fecha{position:absolute; right:6px; top:4px; width:auto; margin:0; background:none; padding:2px 6px}
+#abrir-banca{
+  position:fixed; right:12px; bottom:calc(var(--h-rodape) + 12px); z-index:80; display:none;
+  background:rgba(26,16,8,.85); color:#fff; border:0; border-radius:999px;
+  padding:9px 15px; font-size:12px; cursor:pointer; font-family:inherit;
+}
+</style>
+</head>
+<body>
+
+<div id="selo-previa">PRÉVIA · DADO FICTÍCIO · NÃO É A OPERAÇÃO</div>
+
+<header>
+  <h1>Monitor Fiscal · Castanha OS</h1>
+  <div class="dir">
+    <span class="frescor" id="frescor">atualizado agora</span>
+    <span class="relogio tab" id="relogio">--:--</span>
+    <button id="btn-som" class="mudo" title="Ativar som">🔇</button>
+    <button id="btn-config" title="Ações nos caixas">⚙</button>
+  </div>
+</header>
+
+<div id="grade"></div>
+
+<div id="rodape">
+  <span id="rodape-txt">Nenhum outro caixa chamando</span>
+  <span class="cobertura" id="cobertura"></span>
+  <span class="assina">Desenvolvido por Rodolfo Almeida e Valmir Oliveira</span>
+</div>
+
+<!-- ---------------- Tela B ---------------- -->
+<div id="telaB">
+  <div class="topoB">
+    <h2 id="tituloB">Ações nos caixas</h2>
+  </div>
+  <div class="lista" id="listaB"></div>
+  <div class="rodapeB">
+    <span class="dica">O painel só pede; quem executa é a própria máquina.</span>
+    <button id="btn-usar">Voltar</button>
+  </div>
+</div>
+
+<!-- ---------------- Tranca de entrada ----------------
+     Nasce VISIVEL e por cima de tudo. O painel so comeca a perguntar o estado
+     depois que o servidor aceita o PIN -- antes disso nao ha o que mostrar,
+     porque a API recusa. -->
+<div id="telaPin">
+  <div class="pin-caixa">
+    <h2>Monitor Fiscal</h2>
+    <p class="pin-sub">Passe o crachá no leitor</p>
+    <div class="pin-visor" id="pin-visor"></div>
+    <div class="pin-erro" id="pin-erro"></div>
+    <div class="pin-teclas" id="pin-teclas"></div>
+  </div>
+</div>
+
+<!-- ---------------- Tela C ---------------- -->
+<div id="telaC">
+  <button class="voltaC" id="btn-voltaC">← Voltar para a grade</button>
+  <div class="pdvC" id="pdvC">PDV ---</div>
+  <div class="msgC">Precisa de você agora</div>
+  <div class="cronoC tab" id="cronoC">0:00</div>
+  <div class="estC" id="estC"></div>
+</div>
+
+<!-- ---------------- banca de prova ---------------- -->
+<button id="abrir-banca">banca de prova</button>
+<div id="banca">
+  <button class="fecha" id="fecha-banca">✕</button>
+  <h4>Banca de prova</h4>
+  <button data-cmd="chamar">Chamar o 1º caixa agora</button>
+  <button data-cmd="estourar">Estourar o 1º caixa (2 min)</button>
+  <button data-cmd="cego">Matar o coletor do 2º caixa</button>
+  <button data-cmd="fechar">Fechar o 3º caixa</button>
+  <button data-cmd="fora">Chamado fora da minha tela</button>
+  <button data-cmd="takeover">Ver a variante tela cheia</button>
+  <button data-cmd="calma">Voltar tudo ao normal</button>
+</div>
+
+<script>
+/* ===================================================================
+   MODELO
+   Cada caixa carrega DOIS relogios, e a diferenca entre eles e o ponto
+   mais importante deste arquivo:
+
+     mudou_em  ultima mudanca de visor. Alimenta o "ha 12 s".
+               Ficar parado aqui e operador sem cliente, NAO e falha.
+     visto_em  ultimo batimento do coletor dizendo "li o arquivo, e nada
+               mudou". SO ele pode disparar "sem sinal".
+
+   Confundir os dois transforma caixa vazio as 9h da manha em alarme, e o
+   painel e desligado na primeira semana.
+   =================================================================== */
+
+var LIMITE_SEM_SINAL = 90;   // s sem batimento do coletor
+var LIMITE_CRITICO   = 60;   // s de espera -> meta do contrato violada
+
+/* Degraus da escada de vermelho, em segundos de espera. O chamado JA nasce
+   vermelho (n0); o que muda com o tempo e a profundidade da cor e a
+   velocidade do pisca. */
+var DEGRAUS = [0, 15, 40, LIMITE_CRITICO];   // n0, n1, n2, n3
+function nivelDe(espera){
+  var n = 0;
+  for(var i = 0; i < DEGRAUS.length; i++) if(espera >= DEGRAUS[i]) n = i;
+  return n;
+}
+
+/* Vocabulario FECHADO de estado — oito palavras, medidas em operacao real
+   (33.218 linhas, 10.360 blocos, 12/08/2026). Nao inventar a nona. */
+var ROTULO = {
+  /* PDV tradicional (medido no 208) */
+  SUBTOTAL:"subtotal", SALE:"registrando", IDLE:"livre", THANKYOU:"finalizada",
+  BUSY:"processando", QUERY:"consulta de preço", CLOSED:"fechado", Z:"redução Z",
+  /* Self-checkout (medido nos SELF01-04 em 02/09) — vocabulario proprio */
+  SCREENSV:"aguardando cliente", AUTH:"autorização", EFTPAY:"pagamento",
+  HELLO:"iniciando", PUT_ITEM:"item na balança",
+  /* REMBAG e "remove bag" no vocabulario do venditor, mas nestas maquinas
+     a area de ensacar E a balanca: o que a tela pede a pessoa e tirar o
+     volume de cima dela. "Retirar da sacola" mandava o fiscal procurar
+     uma sacola que nao e o problema. Corrigido pelo Valmir em 07/09,
+     lendo a maquina em operacao. */
+  REMBAG:"retirar da balança",
+  PUTBACK:"devolver item", REMITM:"retirar item", SUB_MSGS:"mensagem",
+  EFT_ADM:"administrativo"
+};
+
+/* Rotulos que dependem do CODIGO, nao so do nome. `extra` sozinho seria
+   ilegivel: sao tres telas diferentes com o mesmo nome. Descoberto em 03/09
+   lendo o que cada uma escreve no visor. */
+var ROTULO_CODIGO = {
+  "extra(33)":"bebida alcoólica",   /* pede autorizacao -- e chamado de fiscal */
+  "extra(74)":"pergunta ao cliente",/* sacola, NF Paulista, identificacao */
+  "extra(31)":"próximo item"        /* "Passe o proximo item", com contador */
+  /* `extra(74)`, `extra(31)` e `SUB_MSGS(30)` continuam sem identificacao.
+     Nao ganham rotulo inventado: aparecem crus, com o codigo, para quem
+     olhar poder reconhecer o que estava na tela. Um travessao no lugar
+     esconderia que existe algo que a gente ainda nao sabe ler. */
+};
+var INATIVO = {CLOSED:1, Z:1};
+
+/* Rotulo de cada categoria de falha. A categoria vem do servidor num
+   vocabulario fechado -- nunca o texto do visor. Categoria desconhecida cai no
+   proprio nome, entao acrescentar uma no config.json ja funciona sem mexer
+   aqui, so com rotulo cru. */
+var FALHA_TITULO = {impressora:"Impressora", sem_papel:"Sem papel"};
+var FALHA_ACAO = {
+  impressora:"não responde — verificar cabos e energia",
+  sem_papel:"trocar a bobina para o caixa voltar"
+};
+
+/* Maquina livre, esperando cliente. `SCREENSV` e o protetor de tela com
+   "Proximo Cliente" — e onde o self passa a maior parte do dia. Todo o resto
+   que nao seja inativo nem chamado e venda em andamento. */
+var LIVRE = {SCREENSV:1, IDLE:1};
+
+/* Numeros de ECF: SO os que estao documentados no acervo. A loja tem 13
+   caixas e a numeracao NAO e sequencial (o 224 existe). A lista completa
+   sai do cadastro, nao de um contador — foi exatamente aqui que a maquete
+   gerada por IA inventou "201 a 213". */
+var CAIXAS = [
+  {n:201, estado:"SUBTOTAL"},
+  {n:203, estado:"IDLE"},
+  {n:205, estado:"SALE"},
+  {n:207, estado:"SUBTOTAL"},
+  {n:208, estado:"CLOSED"},
+  {n:209, estado:"SALE"},
+  {n:224, estado:"IDLE"}
+];
+var TOTAL_CAIXAS_LOJA = 13;   // medido; os outros 6 numeros nao estao no acervo
+
+var agora = function(){ return Math.floor(Date.now()/1000); };
+
+var estado = {};            // numero -> {estado, mudou_em, visto_em, chamando_desde}
+var escolhidos = [201,203,205,208];
+var somLigado = false;
+var audioCtx = null;
+var ultimoBip = 0;
+var takeoverAtivo = false;
+
+CAIXAS.forEach(function(c){
+  estado[c.n] = {
+    estado: c.estado,
+    mudou_em: agora() - Math.floor(Math.random()*90),
+    visto_em: agora(),
+    chamando_desde: null,
+    itens: []
+  };
+});
+
+/* -------------------------------------------------------------------
+   DERIVACAO DO MODO — uma celula tem exatamente um modo
+   ------------------------------------------------------------------- */
+function modoDe(c){
+  /* Com dado real quem decide e o SERVIDOR: so ele sabe se a sessao SSH esta
+     viva, e e isso que separa "tela parada" de "sem sinal". O cliente so
+     reparte o estado calmo entre livre e atendendo, que e cor, nao diagnostico. */
+  if(c.modoServidor){
+    if(c.modoServidor === "congelado") return "congelado";
+    if(c.modoServidor === "alcool_vale") return "alcool_vale";
+    if(c.modoServidor === "falha")    return "falha";
+    if(c.modoServidor === "chamando") return "chamando";
+    if(c.modoServidor === "semsinal") return "semsinal";
+    if(c.modoServidor === "parado")   return "parado";
+    if(c.modoServidor === "aguardando") return "aguardando";
+    if(c.modoServidor === "inativo" || INATIVO[c.estado]) return "inativo";
+    return LIVRE[c.estado] ? "livre" : "atendendo";
+  }
+  var t = agora();
+  if(t - c.visto_em > LIMITE_SEM_SINAL) return "semsinal";
+  if(c.falha) return "falha";
+  if(c.chamando_desde !== null) return "chamando";
+  if(INATIVO[c.estado]) return "inativo";
+  if(LIVRE[c.estado]) return "livre";
+  return "atendendo";
+}
+
+/* mm:ss sempre — um formato so. Dois formatos ("1 min 52" e "1:53") na mesma
+   familia de telas obriga a reler. */
+function mmss(s){
+  /* ARREDONDAR AQUI NAO E DETALHE. Em modo real o servidor manda a espera com
+     decimo de segundo (3.4); sem isto o cronometro imprimia
+     "0:3.4000000953674316" -- dezesseis digitos que estouravam a celula e
+     empurravam o botao Liberar para fora da tela. No simulador tudo era
+     inteiro, entao o defeito so existia contra dado de verdade. */
+  s = Math.round(s);
+  if(s < 0) s = 0;
+  var m = Math.floor(s/60), r = s%60;
+  return m + ":" + (r<10 ? "0"+r : r);
+}
+function ha(s){
+  /* O servidor manda decimo de segundo. Sem arredondar, a celula exibe
+     "ha 1.4000000953674316 s" -- ponto flutuante vazando para a tela. */
+  s = Math.round(s);
+  if(s < 60) return "há " + s + " s";
+  if(s < 3600) return "há " + Math.floor(s/60) + " min";
+  return "há " + Math.floor(s/3600) + " h";
+}
+function esc(x){
+  return String(x).replace(/[&<>"]/g, function(ch){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch];
+  });
+}
+
+/* -------------------------------------------------------------------
+   SOM E VIBRACAO
+   O tablet fica na mao de quem esta atendendo outra coisa. A tela sozinha
+   nao avisa ninguem que nao esta olhando.
+   O navegador so libera audio depois de um toque — por isso o botao de som
+   e tambem o destravamento, e nasce mudo dizendo isso.
+   ------------------------------------------------------------------- */
+/* Som do alerta. Para trocar pelo arquivo do Rodolfo basta preencher
+   SOM_ARQUIVO com o caminho (ou um data URI, se for para nao depender de
+   segundo arquivo). Preenchido, o oscilador abaixo deixa de ser usado. */
+var SOM_ARQUIVO = "";
+var somEl = null;
+
+/* 🔴 O ALERTA — DOIS TONS ALTERNADOS. Escolhido pelo Valmir em 08/09 ouvindo
+   as opcoes no proprio tablet da loja (a banca ficou em /sons.html). Sao dois
+   tons se revezando, tipo interfone: chama atencao sem soar como alarme de
+   incendio, que era o risco da sirene num som que toca dezenas de vezes por
+   dia.
+
+   ---- por que o alerta antigo saia baixo ----
+   Eram DOIS motivos somados, e o segundo pesava mais:
+     1. o ganho de pico era 0.18 -- 18% da escala, sobrando margem sem uso;
+     2. as notas ficavam entre 880 e 660 Hz, ABAIXO da faixa que um alto-falante
+        de tablet reproduz. Sao transdutores pequenos e sem caixa acustica:
+        rendem bem de ~1,5 kHz para cima e despencam abaixo disso. Por isso
+        subir o volume do sistema nao resolvia -- faltava eficiencia do
+        alto-falante naquela frequencia, e isso volume nao compra.
+   Agora o par mais grave ainda fica em 1,5 kHz (2000 x 0.75), dentro da faixa.
+
+   ---- por que existe o saturador ----
+   O Valmir pediu o "volume 2" da banca. Medido, esse ajuste CORTAVA. E baixar
+   o ganho interno quase nao ajudava, porque o compressor ja normaliza e
+   multiplicar a saida por 2 estoura de qualquer jeito.
+
+   A saida foi um saturador tanh (WaveShaper) no lugar do corte duro. Ele e
+   limitado a +-1 por construcao e satura de forma suave, o que ainda por cima
+   ajuda num alto-falante pequeno: os harmonicos que ele cria caem justamente
+   na faixa que o transdutor reproduz bem.
+
+   Os numeros medidos estao logo abaixo, em CALIBRACAO.
+
+   Para ajustar em campo mexa em VOLUME_ALERTA. Se ainda faltar corpo, o
+   caminho seguinte e uma caixinha USB ou Bluetooth: ha um limite fisico no
+   alto-falante que software nao vence. */
+var VOLUME_ALERTA = 1.3;
+/* Tom agudo de cada par, por degrau. Desce de tom conforme a urgencia sobe --
+   o ouvido separa altura melhor que intervalo. O tom grave e 0.75x deste. */
+var FREQ_ALERTA = [2600, 2400, 2200, 2000];
+
+/* Curva do saturador, calculada uma vez so: 2048 pontos nao mudam nunca e
+   refazer isso a cada alerta seria desperdicio puro. */
+var CURVA_SAT = (function(){
+  var n = 2048, c = new Float32Array(n), k = Math.tanh(3);
+  for(var i = 0; i < n; i++){
+    var x = (i / (n - 1)) * 2 - 1;
+    c[i] = Math.tanh(3 * x) / k;
+  }
+  return c;
+})();
+
+function bip(nivel){
+  if(!somLigado) return;
+  if(SOM_ARQUIVO){
+    if(!somEl) somEl = new Audio(SOM_ARQUIVO);
+    try { somEl.volume = 1; somEl.currentTime = 0; somEl.play(); } catch(e){}
+    return;
+  }
+  if(!audioCtx) return;
+  nivel = nivel || 0;
+
+  /* compressor -> ganho -> saturador -> saida.
+     O compressor domina o transiente; o saturador segura o teto. */
+  var comp = audioCtx.createDynamicsCompressor();
+  comp.threshold.value = -16;
+  comp.knee.value = 6;
+  comp.ratio.value = 12;
+  comp.attack.value = 0.002;
+  comp.release.value = 0.10;
+
+  var pre = audioCtx.createGain();
+  pre.gain.value = VOLUME_ALERTA;
+
+  var sat = audioCtx.createWaveShaper();
+  sat.curve = CURVA_SAT;
+  sat.oversample = "4x";
+
+  /* 0.85 nao e estetica: a sobreamostragem 4x do WaveShaper tem overshoot
+     proprio e sozinha levava o pico acima do teto. Esta folga e o que mantem
+     o resultado abaixo de 1.0 -- medido, nao chutado. */
+  var saida = audioCtx.createGain();
+  saida.gain.value = 0.85;
+
+  comp.connect(pre); pre.connect(sat); sat.connect(saida);
+  saida.connect(audioCtx.destination);
+
+  var agudo = FREQ_ALERTA[nivel], grave = agudo * 0.75;
+  var pares = nivel >= 2 ? 3 : 2;   /* mais insistente conforme a urgencia sobe */
+  var t0 = audioCtx.currentTime;
+  for(var i = 0; i < pares; i++){
+    tomAlerta(comp, t0 + i * 0.44, agudo);
+    tomAlerta(comp, t0 + i * 0.44 + 0.22, grave);
+  }
+}
+
+/* Um tom do par. Onda quadrada: rica em harmonicos, atravessa barulho de
+   salao melhor que uma senoide de mesmo nivel. */
+function tomAlerta(destino, t, freq){
+  var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "square";
+  o.frequency.value = freq;
+  o.connect(g); g.connect(destino);
+  /* setValueAtTime antes da rampa: sem ele o valor de partida seria o do
+     momento da CRIACAO do no, e nao o do instante agendado -- o segundo tom
+     do par sairia com envelope errado. */
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.9, t + 0.008);
+  g.gain.setValueAtTime(0.9, t + 0.155);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.20);
+  o.start(t); o.stop(t + 0.21);
+}
+
+function avisaSonoro(){
+  var t = agora(), pior = null;
+  escolhidos.forEach(function(n){
+    var c = estado[n]; if(!c) return;
+    /* Alcool no vale apita no degrau MAIS URGENTE desde o primeiro segundo: o
+       prazo e o do cartao, nao o de um cliente esperando. */
+    /* Congelado nao apita: foi a propria fiscal. */
+    if(c.congelado) return;
+    if(c.alcool_vale){ pior = 9999; return; }
+    /* Falha de equipamento apita como chamado. Foi a queixa que originou o
+       modo: a impressora do 224 caiu e o painel nao avisou de jeito nenhum --
+       nem em cor, nem em som. Alerta que ninguem ouve e meio alerta. */
+    var desde = null;
+    if(c.falha && c.falha_desde) desde = c.falha_desde;
+    if(c.chamando_desde !== null &&
+       (desde === null || c.chamando_desde > desde)) desde = c.chamando_desde;
+    if(desde === null) return;
+    var esp = t - desde;
+    if(pior === null || esp > pior) pior = esp;
+  });
+  if(pior === null) return;
+  /* O som acompanha a mesma escada da cor: quanto mais tempo o cliente esta
+     parado, mais curto o intervalo entre os avisos. */
+  var nivel = nivelDe(pior);
+  var intervalo = [20, 12, 8, 5][nivel];
+  if(t - ultimoBip < intervalo) return;
+  ultimoBip = t;
+  bip(nivel);
+  if(nivel === 3 && navigator.vibrate) navigator.vibrate([220, 90, 220]);
+}
+
+/* A cesta da sessao INTEIRA, na ORDEM EM QUE O CLIENTE PASSOU: o primeiro item
+   em cima, o ultimo embaixo (pedido do Valmir, 08/09). Quem limita a altura e
+   o CSS, e o que nao couber rola.
+
+   🔴 O SERVIDOR CONTINUA MANDANDO DO MAIS RECENTE PARA O MAIS ANTIGO, e nao
+   por descuido: e dessa ponta que saem `item` (o mais recente, que o tablet
+   com pagina velha em cache ainda le) e o corte em `max_itens`. A inversao e
+   de APRESENTACAO e mora aqui. `slice()` antes do `reverse()` porque reverse
+   altera o array no lugar, e `c.itens` e o mesmo objeto que fica guardado em
+   `estado` entre um desenho e o outro -- sem a copia, a lista viraria do
+   avesso duas vezes por segundo.
+
+   Fallback para `c.item`: um tablet que ficou com a pagina antiga em cache
+   continua recebendo o campo unico do servidor, e uma pagina nova contra um
+   servidor antigo tambem tem de funcionar. Nenhum dos dois lados pode exigir
+   que o outro suba primeiro. */
+function listaItens(c, n){
+  var xs = c.itens && c.itens.length
+             ? c.itens.slice().reverse()
+             : (c.item ? [{d:c.item, q:1}] : []);
+  if(!xs.length) return "";
+  var h = "", mostrados = 0;
+  xs.forEach(function(x, i){
+    mostrados += (x.q || 1);
+    /* o que acabou de passar agora e o ULTIMO da lista */
+    h += '<div class="item-linha' + (i === xs.length - 1 ? " nova" : "") + '">'
+       + (x.q > 1 ? '<span class="q">' + x.q + '&times;</span>' : "")
+       + '<span class="d">' + esc(x.d) + '</span>'
+       + '</div>';
+  });
+  /* O servidor guarda ate `max_itens` por caixa. Passou disso, o comeco da
+     compra realmente nao existe mais em lugar nenhum -- e a tela diz isso em
+     vez de deixar o fiscal achar que leu a cesta inteira.
+
+     O aviso vai ACIMA da lista: com a ordem invertida os itens que se perderam
+     sao os PRIMEIROS que o cliente passou, entao o lugar deles e antes da
+     primeira linha. Embaixo, como estava, ele diria o oposto do que aconteceu. */
+  var resto = (c.itens_lidos || 0) - mostrados;
+  return '<div class="cesta">'
+       +   (resto > 0
+             ? '<div class="item-mais">+ ' + resto
+               + (resto > 1 ? " itens" : " item") + ' antes, fora da memória</div>'
+             : "")
+       +   '<div class="lista-itens" data-pdv="' + esc(n) + '">' + h + '</div>'
+       + '</div>';
+}
+
+/* -------------------------------------------------------------------
+   DESENHO
+   ------------------------------------------------------------------- */
+function celula(n){
+  var c = estado[n];
+  if(!c) return '<div class="celula inativo"><div class="linha-topo">'
+              + '<div class="pdv">—</div></div></div>';
+
+  var t = agora(), modo = modoDe(c), classe = modo;
+  if(modo === "chamando") classe += " n" + nivelDe(t - c.chamando_desde);
+  var h = '<div class="celula ' + classe + '"><div class="filete"></div>';
+
+  /* Cego, o rotulo de estado passa a ser LEMBRANCA, nao leitura. Escrever
+     "livre" com a mesma confianca de sempre num caixa que parou de responder
+     e a tela afirmando o que nao sabe mais. */
+  var chave = c.estado + (c.codigo !== null && c.codigo !== undefined
+                            ? "(" + c.codigo + ")" : "");
+  var rot = esc(ROTULO_CODIGO[chave] || ROTULO[c.estado]
+              || (c.estado ? chave : "?"));
+  if(modo === "semsinal"){
+    rot = c.estado
+        ? '<span class="velho">último: ' + rot + '</span>'
+        : '<span class="velho">sem leitura</span>';
+  }
+
+  h += '<div class="linha-topo">'
+     +   '<div class="pdv">' + esc(n) + '</div>'
+     +   '<div class="estado">' + rot + '</div>'
+     + '</div>';
+
+  /* Em venda a cesta e o unico conteudo e precisa de altura definida para
+     rolar; nos outros modos o miolo continua centralizando como sempre. */
+  h += '<div class="miolo' + (modo === "atendendo" ? " miolo-cesta" : "") + '">';
+  if(modo === "chamando"){
+    /* O cronometro e o heroi: e o segundo de cliente parado, que e a unidade
+       de valor escrita no contrato. */
+    h += '<div style="text-align:center">'
+       +   '<div class="chamado">Precisa de você</div>'
+       +   '<div class="crono tab">' + mmss(t - c.chamando_desde) + '</div>'
+       +   listaItens(c, n)
+       +   (c.console
+             ? '<div><a class="liberar" target="_blank" rel="noopener" href="'
+               + esc(c.console) + '">Liberar no ' + esc(n) + ' &rarr;</a></div>'
+             : '')
+       + '</div>';
+  } else if(modo === "congelado"){
+    var cg = c.congelado || {};
+    h += '<div style="text-align:center">'
+       +   '<div class="falha-titulo">Congelado pela fiscal</div>'
+       +   '<div class="falha-linha">' + (cg.por ? 'por ' + esc(cg.por) + ' · ' : '')
+       +     (cg.desde ? ha(t - cg.desde) : '') + '</div>'
+       +   (cg.ate ? '<div class="falha-linha">solta sozinho em '
+                     + mmss(Math.max(0, cg.ate - t)) + '</div>' : '')
+       +   listaItens(c, n)
+       + '</div>';
+  } else if(modo === "alcool_vale"){
+    /* QUAL finalizadora e QUAIS itens: a fiscal chega sabendo o que tirar da
+       compra, ou que o cliente precisa trocar a forma de pagamento. */
+    var av = c.alcool_vale || {};
+    h += '<div style="text-align:center">'
+       +   '<div class="falha-titulo">Bebida alcoólica no vale</div>'
+       +   '<div class="falha-linha">cliente escolheu ' + esc(av.midia || "vale") + '</div>'
+       +   '<div class="alcool-itens">'
+       +     (av.itens || []).map(function(d){ return '<span>' + esc(d) + '</span>'; }).join("")
+       +   '</div>'
+       + '</div>';
+  } else if(modo === "falha"){
+    /* O QUE quebrou e HA QUANTO TEMPO. Sem cronometro de mm:ss: aqui o numero
+       nao mede cliente parado esperando autorizacao, mede maquina fora do ar,
+       e misturar as duas leituras confunde. */
+    h += '<div style="text-align:center">'
+       +   '<div class="falha-titulo">' + esc(FALHA_TITULO[c.falha] || c.falha) + '</div>'
+       +   '<div class="falha-linha">' + esc(FALHA_ACAO[c.falha] || "verificar o equipamento") + '</div>'
+       +   (c.falha_desde ? '<div class="falha-linha">assim ' + ha(t - c.falha_desde) + '</div>' : '')
+       + '</div>';
+  } else if(modo === "semsinal"){
+    h += '<div class="aviso-cego">'
+       + (c.visto_em === null || !c.visto_em
+            ? "Sem sinal — nunca respondeu"
+            : "Sem sinal " + ha(t - c.visto_em))
+       + '</div>';
+  } else if(modo === "parado"){
+    h += '<div class="aviso-cego">Tela parada ' + ha(t - c.visto_em) + '</div>';
+  } else if(modo === "aguardando"){
+    /* Chamado de rotina (bebida): ambar, com contador pequeno. Ele SOBE para
+       vermelho sozinho se ninguem atender -- ver limiar_rotina no servidor. */
+    h += '<div style="text-align:center">'
+       +   '<div class="chamado">aguardando fiscal</div>'
+       +   '<div class="crono-leve tab">' + mmss(t - c.chamando_desde) + '</div>'
+       +   listaItens(c, n)
+       + '</div>';
+  } else if(modo === "atendendo"){
+    /* Durante a venda a lista aparece sozinha no miolo, sem cronometro: aqui
+       nao ha nada errado acontecendo, e a celula nao deve gritar. */
+    h += listaItens(c, n);
+  }
+  h += '</div>';
+
+  /* O "ha X" e a idade da ULTIMA MUDANCA DE VISOR. Ele so vale enquanto a
+     celula esta calma. Em alarme ele briga com o cronometro (dois tempos que
+     discordam na mesma celula), e cego ele nao significa mais nada: o visor
+     pode ter mudado dez vezes sem ninguem ver. Nos dois casos sai da tela. */
+  h += '<div class="rodape-celula">';
+  if(modo === "congelado"){
+    h += '<span>para soltar: ⚙ → caixa ' + esc(n) + ' → Descongelar Self</span>';
+  } else if(modo === "alcool_vale"){
+    h += '<span>vale não paga bebida alcoólica — ir antes do cartão</span>';
+  } else if(modo === "falha"){
+    h += '<span>o caixa não fecha venda até alguém resolver</span>';
+  } else if(modo === "parado"){
+    h += '<span>a máquina responde, mas o visor não muda</span>';
+  } else if(modo === "semsinal"){
+    /* Quando o servidor sabe POR QUE perdeu a maquina, a celula diz. "Sem
+       sinal" sem motivo manda o fiscal chamar a TI para descobrir o obvio --
+       e no primeiro deploy, com o usuario ainda nao criado, o motivo e a
+       unica informacao util na tela. */
+    h += '<span>' + esc(c.erro || "não sei o que está acontecendo neste caixa") + '</span>';
+  } else if(modo === "inativo"){
+    h += '<span>fora de operação</span>';
+    h += '<span class="dir tab">' + ha(t - c.mudou_em) + '</span>';
+  } else if(modo === "chamando"){
+    h += '<span>esperando autorização</span>';
+  } else if(c.papel_velho_ha){
+    /* A ultima leitura dizia "sem papel", mas ja tem tempo: a maquina so
+       consulta a impressora durante a venda. Dizer o que se sabe, com a idade,
+       em vez de afirmar como se fosse agora. */
+    h += '<span class="papel-baixo">sem papel na leitura de ' + ha(c.papel_velho_ha) + '</span>';
+    h += '<span class="dir tab">' + ha(t - c.mudou_em) + '</span>';
+  } else if(c.papel_baixo){
+    /* A bobina esta acabando e o caixa ainda vende. Aviso, nao alarme: trocar
+       agora evita a parada, mas nada quebrou ainda. */
+    h += '<span class="papel-baixo">papel acabando</span>';
+    h += '<span class="dir tab">' + ha(t - c.mudou_em) + '</span>';
+  } else {
+    h += '<span class="dir tab">' + ha(t - c.mudou_em) + '</span>';
+  }
+  h += '</div>';
+
+  return h + '</div>';
+}
+
+function desenha(){
+  var t = agora();
+
+  /* 🔴 A GRADE E REESCRITA INTEIRA A CADA 500 ms. Sem guardar e devolver a
+     posicao de rolagem, a lista saltava de volta ao topo duas vezes por
+     segundo e era IMPOSSIVEL ler a cesta: o fiscal arrastava e a tela desfazia
+     o arrasto no meio do gesto. A posicao e guardada por PDV, e nao por
+     posicao na grade, senao ela migra de celula quando o fiscal troca quais
+     caixas esta acompanhando.
+
+     GRUDA NO FIM. Com a ordem invertida o item novo nasce EMBAIXO, entao uma
+     lista deixada no topo esconderia justamente o que acabou de ser passado --
+     que e o que o fiscal veio ver. Quem estava no fim continua no fim, e a
+     lista desce sozinha a cada item novo.
+
+     Mas so quem estava no fim: se o fiscal subiu para ler o comeco da compra,
+     a posicao dele e respeitada e a lista NAO o arrasta de volta. Lista que
+     acabou de aparecer na tela (`undefined`) tambem nasce no fim. */
+  var grade = document.getElementById("grade");
+  var rolagem = {}, antes = grade.getElementsByClassName("lista-itens"), i, el;
+  for(i = 0; i < antes.length; i++){
+    el = antes[i];
+    // 4 px de folga: o arredondamento do zoom do tablet raramente fecha exato
+    var noFim = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
+    rolagem[el.getAttribute("data-pdv")] = noFim ? "fim" : el.scrollTop;
+  }
+
+  grade.innerHTML = escolhidos.map(celula).join("");
+
+  var depois = grade.getElementsByClassName("lista-itens");
+  for(i = 0; i < depois.length; i++){
+    el = depois[i];
+    var y = rolagem[el.getAttribute("data-pdv")];
+    el.scrollTop = (y === undefined || y === "fim") ? el.scrollHeight : y;
+  }
+
+  /* Os outros caixas. Sem esta faixa o painel fica calmo mentindo: o fiscal
+     ve 4 de 13, e um chamado nos outros 9 nao existiria na tela. */
+  var fora = [];
+  CAIXAS.forEach(function(x){
+    if(escolhidos.indexOf(x.n) !== -1) return;
+    var c = estado[x.n];
+    if(!c) return;
+    /* Falha entra aqui junto com o chamado, e ANTES dele: o fiscal ve 4 de 13,
+       e uma impressora morta num caixa fora da tela nao pode ficar invisivel
+       so porque ninguem escolheu aquele caixa. */
+    if(c.congelado){
+      fora.push(x.n + " congelado");
+    } else if(c.alcool_vale){
+      fora.push(x.n + " álcool no vale");
+    } else if(c.falha && c.falha_desde){
+      fora.push(x.n + " " + (FALHA_TITULO[c.falha] || c.falha).toLowerCase());
+    } else if(c.papel_baixo){
+      fora.push(x.n + " papel acabando");
+    } else if(c.chamando_desde !== null){
+      fora.push(x.n + " " + ha(t - c.chamando_desde));
+    }
+  });
+  var rod = document.getElementById("rodape");
+  document.getElementById("rodape-txt").textContent = fora.length
+    ? "⚠ Fora da sua tela: " + fora.join(" · ")
+    : "Nenhum outro caixa chamando";
+  rod.className = fora.length ? "tem" : "";
+  document.getElementById("cobertura").textContent =
+    "você acompanha " + escolhidos.length + " de " + TOTAL_CAIXAS_LOJA + " caixas";
+
+  /* O frescor do proprio painel. Se ele envelhecer, o cabecalho tem de gritar:
+     um painel parado com quatro cartoes verdes e a pior tela possivel. */
+  var idade = t - janelaVista;
+  var f = document.getElementById("frescor");
+  f.textContent = idade < 5 ? "atualizado agora" : "atualizado " + ha(idade);
+  f.className = "frescor" + (idade > 30 ? " velho" : "");
+  document.getElementById("relogio").textContent =
+    new Date().toLocaleTimeString("pt-BR", {hour:"2-digit", minute:"2-digit"});
+
+  if(takeoverAtivo) desenhaC();
+  avisaSonoro();
+}
+
+/* Tela C — takeover. So faz sentido com UM critico; com dois, esconderia um
+   deles, e a tela nao pode esconder. */
+function criticosNaTela(){
+  var t = agora(), lista = [];
+  escolhidos.forEach(function(n){
+    var c = estado[n];
+    if(c && c.chamando_desde !== null && t - c.chamando_desde >= LIMITE_CRITICO) lista.push(n);
+  });
+  return lista;
+}
+function desenhaC(){
+  var crit = criticosNaTela();
+  if(crit.length !== 1){ fechaC(); return; }
+  var n = crit[0], c = estado[n];
+  document.getElementById("pdvC").textContent  = "PDV " + n;
+  document.getElementById("cronoC").textContent = mmss(agora() - c.chamando_desde);
+  document.getElementById("estC").textContent   = ROTULO[c.estado] || "";
+  document.getElementById("telaC").className = "on";
+}
+function fechaC(){
+  takeoverAtivo = false;
+  document.getElementById("telaC").className = "";
+}
+
+/* -------------------------------------------------------------------
+   TELA B — ACOES NA MAQUINA
+   ------------------------------------------------------------------- */
+/* Substituiu a tela de "quais 4 caixas acompanhar", que era um no-op: a loja
+   tem 4 self-checkouts e o painel mostra 4, entao a escolha era sempre a mesma.
+   `escolhidos` continua existindo e sendo preenchido pelo servidor. */
+var acaoPdv = null;      // caixa aberto no menu, ou null
+var acaoPend = null;     // acao aguardando confirmacao
+var volAtual = null;     // volume lido da maquina, ou null enquanto carrega
+var PISO_VOL = 30;       // o mesmo piso do roteiro; abaixo disso a maquina
+                         // fica muda e ninguem descobre por que
+/* 🔴 A SESSAO VIVE SO EM MEMORIA. Nada de localStorage nem cookie: o pedido
+   foi PIN toda vez que se abre o endereco, e guardar o token em disco faria o
+   contrario -- abriria sozinho para sempre depois da primeira vez.
+   Recarregar a pagina perde a variavel e a tranca volta, que e o efeito certo.
+
+   A tela e conveniencia; quem barra e o SERVIDOR. Sem token, /api/estado
+   responde 401 -- e e ali que estao os estados dos caixas e a cesta de quem
+   esta comprando agora. Overlay sem tranca no servidor seria so uma cortina. */
+var token = null;
+var pinDigitado = "";
+var pinErro = "";
+/* Como o que esta no visor chegou ali. A matricula so vale vinda do leitor --
+   ver `pins_digitaveis` no coletor. Nasce em estado de leitor e SO cai para
+   digitado, nunca o contrario: misturar dedo com leitura conta como digitado,
+   que e o lado seguro. */
+var pinTeclado = false;   // alguem tocou no teclado da tela
+var pinRajada = 0;        // maior sequencia de digitos rapidos seguidos
+
+var ACOES = [
+  {id:"destrava", rotulo:"Destrava Self", pergunta:"Destravar o",
+   diz:"Destrava o caixa sem ir ate ele.", perigo:false},
+  {id:"congela", rotulo:"Congelar Self", pergunta:"Congelar o",
+   diz:"Pausa a venda do jeito que está: o cliente não consegue continuar. "
+     + "Não funciona no pagamento com cartão. Solta sozinho em 10 min.",
+   perigo:false},
+  {id:"descongela", rotulo:"Descongelar Self", pergunta:"Descongelar o",
+   diz:"Solta a venda. O que o cliente passou ou tocou enquanto estava "
+     + "congelado entra agora — confira a cesta.", perigo:false},
+  {id:"reinicia", rotulo:"Reinicia Self",
+   diz:"Desliga e liga a maquina. Demora, e derruba a venda aberta.",
+   perigo:true}
+];
+
+function desenhaB(){
+  var h = "";
+  if(acaoPdv === null){
+    h = '<div class="nota">Toque no caixa para ver o que dá para fazer nele '
+      + 'daqui.</div>';
+    CAIXAS.forEach(function(x){
+      var c = estado[x.n] || {};
+      h += '<div class="item" data-n="' + x.n + '">'
+         +   '<span class="n">' + x.n + '</span>'
+         +   '<span class="e">' + esc(ROTULO[c.estado] || "?") + '</span>'
+         +   '<span class="ordem">&rsaquo;</span>'
+         + '</div>';
+    });
+  } else {
+    var c = estado[acaoPdv] || {};
+    /* Venda aberta e a informacao que muda a decisao de reiniciar, entao ela
+       fica NA TELA, nao escondida na confirmacao. */
+    var vendendo = c.estado && !LIVRE[c.estado] && !INATIVO[c.estado];
+    h = '<div class="nota"><b>Caixa ' + esc(acaoPdv) + '</b> — '
+      + esc(ROTULO[c.estado] || "?")
+      + (vendendo ? ' · <b>venda em andamento</b>' : '') + '</div>';
+
+    if(false){
+      /* TRANCADO. O volume ainda aparece, porque ler nao muda nada -- e a tela
+         esconder o estado da maquina seria pior do que travar a acao. */
+      h += '<div class="acao volume-cartao">'
+         +   '<div class="acao-txt"><div class="acao-nome">Volume do Self</div>'
+         +     '<div class="acao-diz">'
+         +       (volAtual === null ? 'lendo\u2026' : 'esta em ' + volAtual + '%')
+         +     '</div></div>'
+         + '</div>'
+         + '<div class="acao tranca">'
+         +   '<div class="acao-txt">'
+         +     '<div class="acao-nome">Digite o PIN para liberar</div>'
+         +     '<div class="acao-diz">Volume, destravar e reiniciar mexem no '
+         +       'caixa. O PIN e esquecido quando voce sai desta tela.</div>'
+         +   '</div>'
+         +   '<div class="pin-visor">'
+         +     (pinDigitado.replace(/./g, "\u2022")
+                || '<span class="vazio">\u00b7\u00b7\u00b7\u00b7</span>')
+         +   '</div>'
+         +   (pinErro ? '<div class="pin-erro">' + esc(pinErro) + '</div>' : '')
+         +   '<div class="pin-teclas">';
+      [1,2,3,4,5,6,7,8,9].forEach(function(d){
+        h += '<button class="pin-t" data-pin="' + d + '">' + d + '</button>';
+      });
+      h += '<button class="pin-t apaga" data-pin="apaga">\u2190</button>'
+         +   '<button class="pin-t" data-pin="0">0</button>'
+         +   '<button class="pin-t ok" data-pin="ok">OK</button>'
+         + '</div></div>'
+         + '<div class="acao-resposta" id="acao-resposta"></div>';
+      document.getElementById("listaB").innerHTML = h;
+      document.getElementById("tituloB").textContent = "Caixa " + acaoPdv;
+      document.getElementById("btn-usar").textContent = "\u2190 Caixas";
+      return;
+    }
+
+    /* A BARRA DE VOLUME. Fica antes das acoes porque e a unica reversivel:
+       arrastar demais nao quebra nada, e o piso impede o caso ruim. */
+    h += '<div class="acao volume-cartao">'
+       +   '<div class="acao-txt">'
+       +     '<div class="acao-nome">Volume do Self</div>'
+       +     '<div class="acao-diz">Arraste para subir ou baixar. Grava na '
+       +       'máquina, então sobrevive ao próximo boot. Não desce de '
+       +       PISO_VOL + '%: mais baixo que isso o caixa fica mudo.</div>'
+       +   '</div>'
+       +   '<div class="vol-linha">'
+       +     '<input type="range" id="vol-barra" min="' + PISO_VOL + '" max="100" step="1"'
+       +        ' value="' + (volAtual === null ? 70 : volAtual) + '"'
+       +        (volAtual === null ? ' disabled' : '') + '>'
+       +     '<span class="vol-num" id="vol-num">'
+       +        (volAtual === null ? '…' : volAtual + '%') + '</span>'
+       +   '</div>'
+       + '</div>';
+
+    ACOES.forEach(function(a){
+      var confirmando = acaoPend === a.id;
+      h += '<div class="acao' + (a.perigo ? " perigo" : "")
+         +   (confirmando ? " confirmando" : "") + '">'
+         +   '<div class="acao-txt"><div class="acao-nome">' + esc(a.rotulo) + '</div>'
+         +     '<div class="acao-diz">' + esc(a.diz) + '</div></div>';
+      if(confirmando){
+        /* CONFIRMAR E O PADRAO PARA AS DUAS, nao so para o reinicio. O painel
+           fica pendurado onde passa gente: um encostao nao pode mexer no
+           caixa. E o texto diz o numero, porque errar de caixa e o engano
+           mais facil de cometer com quatro botoes iguais. */
+        h += '<div class="acao-conf">'
+           +   '<span>' + (a.perigo && vendendo
+                  ? 'Reiniciar o ' + esc(acaoPdv) + '? A venda aberta se perde.'
+                  : (a.perigo ? 'Reiniciar o ' + esc(acaoPdv) + '?'
+                     : (a.pergunta || 'Destravar o') + ' ' + esc(acaoPdv) + '?')) + '</span>'
+           +   '<button class="nao" data-cancela="1">Não</button>'
+           +   '<button class="sim" data-faz="' + a.id + '">Sim</button>'
+           + '</div>';
+      } else {
+        h += '<button class="acao-btn" data-pede="' + a.id + '">'
+           + esc(a.rotulo) + '</button>';
+      }
+      h += '</div>';
+    });
+    h += '<div class="acao-resposta" id="acao-resposta"></div>';
+  }
+  document.getElementById("listaB").innerHTML = h;
+  document.getElementById("tituloB").textContent =
+    acaoPdv === null ? "Ações nos caixas" : "Caixa " + acaoPdv;
+  document.getElementById("btn-usar").textContent =
+    acaoPdv === null ? "Voltar" : "← Caixas";
+}
+
+function abreB(){
+  acaoPdv = null; acaoPend = null;
+  desenhaB();
+  document.getElementById("telaB").className = "on";
+}
+function fechaB(){
+  if(acaoPdv !== null){
+    acaoPdv = null; acaoPend = null;
+    desenhaB(); return;
+  }
+  document.getElementById("telaB").className = ""; desenha();
+}
+
+function respondeAcao(txt, ruim){
+  var el = document.getElementById("acao-resposta");
+  if(el){ el.textContent = txt; el.className = "acao-resposta" + (ruim ? " ruim" : " bom"); }
+}
+
+/* Le o volume da maquina ao abrir o caixa. Enquanto nao chega, a barra fica
+   desabilitada e o numero mostra "…" -- melhor do que mostrar um valor
+   inventado que o fiscal poderia tomar por real. */
+function leVolume(){
+  var pdv = acaoPdv;
+  pedeAcao(pdv, "volume-ler", null, function(ok, resp){
+    if(pdv !== acaoPdv) return;            // trocou de caixa no meio
+    if(ok){ volAtual = parseInt(resp, 10); desenhaB(); }
+    else respondeAcao("não consegui ler o volume: " + resp, true);
+  });
+}
+
+/* Aplica no `change`, nao no `input`: `input` dispara a cada pixel de arrasto e
+   viraria dezenas de conexoes SSH para um gesto so. */
+function aplicaVolume(v){
+  var pdv = acaoPdv;
+  var num = document.getElementById("vol-num");
+  if(num) num.textContent = v + "%…";
+  pedeAcao(pdv, "volume-set", v, function(ok, resp){
+    if(pdv !== acaoPdv) return;
+    var n = document.getElementById("vol-num");
+    if(ok){
+      /* O numero e o que a MAQUINA respondeu, nao o que a barra pediu:
+         comando aceito nao e comando aplicado. */
+      volAtual = parseInt(resp, 10);
+      if(n) n.textContent = volAtual + "%";
+      var b = document.getElementById("vol-barra");
+      if(b && parseInt(b.value, 10) !== volAtual) b.value = volAtual;
+      respondeAcao("volume em " + volAtual + "%", false);
+    } else {
+      if(n) n.textContent = (volAtual === null ? "…" : volAtual + "%");
+      respondeAcao("não deu: " + resp, true);
+    }
+  });
+}
+
+function pedeAcao(pdv, acao, valor, pronto){
+  var x = new XMLHttpRequest();
+  x.open("POST", "api/comando", true);
+  x.setRequestHeader("Content-Type", "application/json");
+  x.setRequestHeader("X-MF-Token", token || "");
+  x.timeout = 25000;
+  x.onload = function(){
+    var d = null;
+    try { d = JSON.parse(x.responseText); } catch(e){ d = null; }
+    pronto(!!(d && d.ok), (d && d.resposta) || "sem resposta do servidor");
+  };
+  x.onerror = x.ontimeout = function(){
+    pronto(false, "o painel não conseguiu falar com o servidor");
+  };
+  x.send(JSON.stringify({pdv: pdv, acao: acao, valor: valor}));
+}
+
+/* -------------------------------------------------------------------
+   TRANCA DE ENTRADA
+   ------------------------------------------------------------------- */
+function desenhaPin(){
+  document.getElementById("pin-visor").innerHTML =
+    pinDigitado.replace(/./g, "\u2022") ||
+    '<span class="vazio">\u00b7\u00b7\u00b7\u00b7</span>';
+  document.getElementById("pin-erro").textContent = pinErro;
+}
+
+function tranca(motivo){
+  token = null; pinDigitado = ""; pinErro = motivo || "";
+  pinTeclado = false; pinRajada = 0;
+  document.getElementById("telaPin").className = "";
+  desenhaPin();
+}
+
+function destranca(){
+  document.getElementById("telaPin").className = "off";
+  pinDigitado = ""; pinErro = "";
+  pinTeclado = false; pinRajada = 0;
+  buscaServidor();
+}
+
+function confirmaPin(){
+  var tentativa = pinDigitado;
+  /* Leitor = rajada de pelo menos 4 digitos rapidos E nenhum toque na tela.
+     Quatro digitos com menos de 40 ms entre eles nao saem de mao humana; o
+     teclado da tela nem passa por aqui, porque ele e clique, nao tecla. */
+  var veioDoLeitor = !pinTeclado && pinRajada >= 4;
+  pinErro = "conferindo\u2026"; desenhaPin();
+  var x = new XMLHttpRequest();
+  x.open("POST", "api/entrar", true);
+  x.setRequestHeader("Content-Type", "application/json");
+  x.timeout = 12000;
+  x.onload = function(){
+    var d = null;
+    try { d = JSON.parse(x.responseText); } catch(e){ d = null; }
+    if(d && d.ok && d.token){ token = d.token; destranca(); }
+    else {
+      pinDigitado = "";
+      pinErro = (d && d.erro) || "nao consegui conferir";
+      pinTeclado = false; pinRajada = 0;
+      desenhaPin();
+    }
+  };
+  x.onerror = x.ontimeout = function(){
+    pinErro = "o painel nao conseguiu falar com o servidor"; desenhaPin();
+  };
+  x.send(JSON.stringify({pin: tentativa, leitor: veioDoLeitor}));
+}
+
+/* -------------------------------------------------------------------
+   O CRACHA NO LEITOR
+   Leitor de codigo de barras USB ou Bluetooth em modo HID se apresenta ao
+   sistema como TECLADO: ele "digita" os digitos e normalmente manda um Enter
+   no fim. Entao nao ha nada de especial a fazer alem de ouvir o teclado --
+   vale para o leitor, para um teclado de verdade e para o crachá de
+   proximidade, que tambem sai como teclado.
+
+   O teclado da tela continua funcionando: isto aqui e adicional, nao troca.
+   ------------------------------------------------------------------- */
+(function ouveCracha(){
+  var ultimo = 0, seguidas = 0, espera = null;
+
+  function envia(){
+    if(espera){ clearTimeout(espera); espera = null; }
+    seguidas = 0;
+    confirmaPin();
+  }
+
+  document.addEventListener("keydown", function(ev){
+    /* So enquanto a tranca esta na frente. Com o painel aberto, o teclado
+       nao tem nada que mexer aqui. */
+    if(document.getElementById("telaPin").className === "off") return;
+    if(ev.ctrlKey || ev.altKey || ev.metaKey) return;
+
+    var k = ev.key;
+
+    /* Enter e o sufixo de fabrica da maioria dos leitores. Tab tambem aparece
+       em alguns, configurados para pular de campo. */
+    if(k === "Enter" || k === "Tab"){ ev.preventDefault(); envia(); return; }
+
+    if(k === "Backspace"){
+      ev.preventDefault();
+      pinDigitado = pinDigitado.slice(0, -1); pinErro = ""; desenhaPin();
+      return;
+    }
+
+    if(k.length !== 1 || k < "0" || k > "9") return;   // ignora prefixo/letra
+    ev.preventDefault();
+
+    var t = Date.now();
+    /* Digito que chega menos de 40 ms depois do anterior nao foi dedo: foi
+       leitor. Pessoa nenhuma digita quatro numeros com 40 ms entre eles, e o
+       teclado DA TELA nem passa por aqui -- ele e clique. */
+    seguidas = (t - ultimo < 40) ? seguidas + 1 : 1;
+    ultimo = t;
+    if(seguidas > pinRajada) pinRajada = seguidas;
+
+    if(pinDigitado.length < 12){ pinDigitado += k; pinErro = ""; desenhaPin(); }
+
+    /* Leitor configurado SEM sufixo existe, e nesses o Enter nunca vem. Se a
+       rajada parou, manda sozinho -- senao a fiscal passa o crachá, ve os
+       pontinhos aparecerem e fica esperando algo que nao acontece. */
+    if(espera) clearTimeout(espera);
+    if(seguidas >= 4){
+      espera = setTimeout(envia, 120);
+    }
+  });
+})();
+
+(function montaTeclado(){
+  var h = "";
+  [1,2,3,4,5,6,7,8,9].forEach(function(d){
+    h += '<button class="pin-t" data-k="' + d + '">' + d + '</button>';
+  });
+  h += '<button class="pin-t apaga" data-k="apaga">\u2190</button>'
+     + '<button class="pin-t" data-k="0">0</button>'
+     + '<button class="pin-t ok" data-k="ok">OK</button>';
+  document.getElementById("pin-teclas").innerHTML = h;
+  document.getElementById("pin-teclas").addEventListener("click", function(ev){
+    var b = ev.target;
+    if(!b || !b.getAttribute("data-k")) return;
+    var k = b.getAttribute("data-k");
+    if(k === "apaga"){ pinDigitado = pinDigitado.slice(0, -1); pinErro = ""; }
+    else if(k === "ok"){ confirmaPin(); return; }
+    else if(pinDigitado.length < 12){
+      /* 12, nao 8: os PINs viraram matricula de cracha, e 30184909 ja
+         tem 8 digitos exatos -- sem folga, a proxima matricula maior
+         nao entraria. */
+      pinDigitado += k; pinErro = "";
+      pinTeclado = true;     // dedo na tela: isto e digitado, nao lido
+    }
+    desenhaPin();
+  });
+  desenhaPin();
+})();
+
+function executaAcao(pdv, acao){
+  respondeAcao("enviando…", false);
+  var x = new XMLHttpRequest();
+  x.open("POST", "api/comando", true);
+  x.setRequestHeader("Content-Type", "application/json");
+  x.setRequestHeader("X-MF-Token", token || "");
+  x.timeout = 25000;
+  x.onload = function(){
+    var d = null;
+    try { d = JSON.parse(x.responseText); } catch(e){ d = null; }
+    if(d && d.ok) respondeAcao("feito: " + (d.resposta || "sem resposta"), false);
+    else respondeAcao("não deu: " + ((d && d.resposta) || "sem resposta do servidor"), true);
+  };
+  /* Erro de rede NAO pode virar "deu certo". O reinicio derruba a conexao de
+     proposito, e quem sabe distinguir isso do que falhou de verdade e o
+     servidor, que ve a saida do SSH -- aqui so se relata. */
+  x.onerror = x.ontimeout = function(){
+    respondeAcao("não deu: o painel não conseguiu falar com o servidor", true);
+  };
+  x.send(JSON.stringify({pdv: pdv, acao: acao}));
+}
+
+document.getElementById("listaB").addEventListener("click", function(ev){
+  var alvo = ev.target;
+  while(alvo && alvo.id !== "listaB"){
+    if(alvo.getAttribute && alvo.getAttribute("data-pede")){
+      acaoPend = alvo.getAttribute("data-pede"); desenhaB(); return;
+    }
+    if(alvo.getAttribute && alvo.getAttribute("data-cancela")){
+      acaoPend = null; desenhaB(); return;
+    }
+    if(alvo.getAttribute && alvo.getAttribute("data-faz")){
+      var a = alvo.getAttribute("data-faz");
+      acaoPend = null; desenhaB();
+      executaAcao(acaoPdv, a); return;
+    }
+    if(alvo.getAttribute && alvo.getAttribute("data-n")){
+      acaoPdv = parseInt(alvo.getAttribute("data-n"), 10);
+      acaoPend = null; volAtual = null;
+      desenhaB(); leVolume(); return;
+    }
+    alvo = alvo.parentNode;
+  }
+});
+/* Delegado no container: a barra e recriada a cada desenhaB, entao prender o
+   evento nela direto se perderia no primeiro redesenho. */
+document.getElementById("listaB").addEventListener("input", function(ev){
+  if(ev.target && ev.target.id === "vol-barra"){
+    var n = document.getElementById("vol-num");
+    if(n) n.textContent = ev.target.value + "%";
+  }
+});
+document.getElementById("listaB").addEventListener("change", function(ev){
+  if(!ev.target || ev.target.id !== "vol-barra") return;
+
+  /* 🔴 NUNCA ESCREVER ANTES DE TER LIDO. Sem esta guarda, um `change` que o
+     proprio redesenho dispara aplica na maquina o valor DEFAULT da barra --
+     e nao o que alguem escolheu. Aconteceu em teste em 10/09: o 221 foi de
+     82% para 70% sem ninguem encostar na barra. Numa tela pendurada na loja
+     isso e pior do que parece, porque o volume some sozinho e ninguem liga o
+     fato ao painel. */
+  if(volAtual === null) return;
+
+  var v = parseInt(ev.target.value, 10);
+  /* Nem gasta conexao para nao mudar nada. */
+  if(v === volAtual) return;
+
+  aplicaVolume(v);
+});
+
+document.getElementById("btn-config").onclick = abreB;
+document.getElementById("btn-usar").onclick  = fechaB;
+document.getElementById("btn-voltaC").onclick = fechaC;
+
+document.getElementById("btn-som").onclick = function(){
+  somLigado = !somLigado;
+  if(somLigado && !audioCtx){
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(AC) audioCtx = new AC();
+  }
+  if(somLigado && audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  this.textContent = somLigado ? "🔊" : "🔇";
+  this.className = somLigado ? "" : "mudo";
+  if(somLigado) bip(0);
+};
+
+/* -------------------------------------------------------------------
+   SIMULADOR — SO existe nesta previa. Em producao, quem preenche `estado`
+   e a leitura do coletor.
+   ------------------------------------------------------------------- */
+var janelaVista = agora();     // ultimo "batimento" que o painel recebeu
+var cegos = {};                // caixas com o coletor derrubado de proposito
+
+/* Descricoes reais do PLU da loja, escolhidas para exercitar o pior caso da
+   lista: nomes de 20 caracteres, que em RETRATO nao cabem numa linha so. Se a
+   prova rodar com "PAO" e "LEITE" a quebra de linha nunca aparece aqui e o
+   defeito volta a ser descoberto no tablet do Rodolfo. */
+var PROVA_ITENS = [
+  "REFRIG.COCA COLA 2LT", "OVOS DEMARCHI BCO 20", "MIST BOLO ITALAC 400",
+  "SOBRECOX SEARA 1KG Z", "Q PARMESAO CUNHA KG",  "ALFACE MIMO HIDRO UN",
+  "MARG QUALY 500G",      "CALDO APTI 57G",       "CEBOLA COMUM KG"
+];
+
+/* A cesta so existe enquanto o cliente esta no caixa: nasce vazia e e apagada
+   quando o estado vira fim de sessao -- a mesma regra que o servidor aplica em
+   ESTADOS_FIM_DE_SESSAO. */
+var FIM_SESSAO = {SCREENSV:1, IDLE:1, CLOSED:1, Z:1, HELLO:1, THANKYOU:1};
+
+function passaItem(c){
+  if(!c.itens) c.itens = [];
+  var d = PROVA_ITENS[Math.floor(Math.random()*PROVA_ITENS.length)];
+  if(c.itens.length && c.itens[0].d === d) c.itens[0].q++;
+  else c.itens.unshift({d:d, q:1, ha:0});
+  c.itens.length = Math.min(c.itens.length, 30);
+  c.itens_lidos = (c.itens_lidos || 0) + 1;
+  c.item = c.itens[0].d;
+}
+
+function tique(){
+  var t = agora();
+  janelaVista = t;
+  CAIXAS.forEach(function(x){
+    var c = estado[x.n];
+    if(cegos[x.n]) return;                       // coletor derrubado: visto_em congela
+    c.visto_em = t;
+    if(INATIVO[c.estado]) return;
+    /* passa item a cada ~3 s enquanto ha venda em andamento */
+    if(!FIM_SESSAO[c.estado] && Math.random() < 1/3) passaItem(c);
+    if(c.chamando_desde !== null){
+      /* 1 chance em 12 por segundo de a autorizacao acontecer: o episodio
+         fecha SOZINHO, sem ninguem tocar em botao nenhum. */
+      if(Math.random() < 1/12){
+        c.chamando_desde = null;
+        c.estado = "SUBTOTAL";
+        c.mudou_em = t;
+      }
+      return;
+    }
+    if(Math.random() < 1/40){                    // o visor muda
+      var ciclo = ["SALE","SUBTOTAL","SALE","SUBTOTAL","THANKYOU","IDLE","QUERY","BUSY"];
+      c.estado = ciclo[Math.floor(Math.random()*ciclo.length)];
+      c.mudou_em = t;
+      /* o cliente foi embora: a cesta dele morre aqui, inteira */
+      if(FIM_SESSAO[c.estado]){ c.itens = []; c.item = null; c.itens_lidos = 0; }
+    }
+    if(Math.random() < 1/70){                    // entra em espera por autorizacao
+      c.chamando_desde = t;
+    }
+  });
+  desenha();
+}
+
+document.getElementById("banca").addEventListener("click", function(ev){
+  var cmd = ev.target.getAttribute("data-cmd");
+  if(!cmd) return;
+  var t = agora();
+  var a = escolhidos[0], b = escolhidos[1], c3 = escolhidos[2];
+  if(cmd === "chamar" && estado[a]) estado[a].chamando_desde = t;
+  if(cmd === "estourar" && estado[a]) estado[a].chamando_desde = t - 120;
+  if(cmd === "cego" && estado[b]){ cegos[b] = 1; estado[b].visto_em = t - 200; }
+  if(cmd === "fechar" && estado[c3]){
+    estado[c3].estado = "CLOSED"; estado[c3].chamando_desde = null; estado[c3].mudou_em = t;
+  }
+  if(cmd === "fora"){
+    CAIXAS.forEach(function(x){
+      if(escolhidos.indexOf(x.n) === -1 && estado[x.n].chamando_desde === null
+         && !INATIVO[estado[x.n].estado]){
+        estado[x.n].chamando_desde = t - 34;
+      }
+    });
+  }
+  if(cmd === "takeover"){
+    if(estado[a]) estado[a].chamando_desde = t - 95;
+    takeoverAtivo = true;
+  }
+  if(cmd === "calma"){
+    cegos = {}; takeoverAtivo = false; fechaC();
+    CAIXAS.forEach(function(x){
+      estado[x.n].chamando_desde = null;
+      estado[x.n].visto_em = t;
+      if(INATIVO[estado[x.n].estado]) estado[x.n].estado = "IDLE";
+      estado[x.n].mudou_em = t;
+    });
+  }
+  desenha();
+});
+document.getElementById("fecha-banca").onclick = function(ev){
+  ev.stopPropagation();
+  document.getElementById("banca").style.display = "none";
+  document.getElementById("abrir-banca").style.display = "block";
+};
+document.getElementById("abrir-banca").onclick = function(){
+  document.getElementById("banca").style.display = "block";
+  this.style.display = "none";
+};
+
+/* -------------------------------------------------------------------
+   DOIS MODOS, UM ARQUIVO SO.
+
+   Se `/api/estado` responder, a tela roda com dado REAL e o simulador
+   nunca liga. Se nao responder, cai na banca de prova com dado ficticio,
+   com o selo de PREVIA visivel.
+
+   Ter um arquivo com dois modos e proposital: duas copias do mesmo painel
+   divergem em silencio, e a que o Rodolfo abre no tablet nunca e a que foi
+   corrigida.
+   ------------------------------------------------------------------- */
+var modoReal = false;
+var falhasSeguidas = 0;
+
+function aplicaServidor(d){
+  var t = agora();
+  LIMITE_SEM_SINAL = d.limiar_sem_sinal || LIMITE_SEM_SINAL;
+
+  CAIXAS = (d.caixas || []).map(function(c){ return {n:c.pdv, estado:c.estado}; });
+  /* Em modo real a cobertura e contra o que o coletor MONITORA, nao contra os
+     13 caixas da loja. Dizer "4 de 13" com o coletor configurado para 4
+     prometeria uma vigilancia que nao existe. */
+  TOTAL_CAIXAS_LOJA = CAIXAS.length;
+
+  (d.caixas || []).forEach(function(c){
+    var e = estado[c.pdv] || (estado[c.pdv] = {});
+    /* Sem leitura nenhuma o estado fica NULO, nunca "IDLE". Cair num padrao
+       aqui fazia a celula escrever "ultimo: livre" para uma maquina que
+       jamais respondeu — a tela afirmando o que ninguem observou. */
+    e.estado = c.estado || null;
+    e.codigo = c.codigo;
+    e.mudou_em = c.mudou_ha === null ? t : t - c.mudou_ha;
+    /* Se o servidor nunca viu a maquina, `visto_ha` vem nulo. Guardar null,
+       e nao um relogio antigo: a celula cai em "sem sinal" do mesmo jeito,
+       mas passa a dizer "nunca respondeu" em vez de inventar uma idade.
+       Com zero aqui a tela exibia "sem sinal ha 496774 h", que e a distancia
+       ate 1970 — numero verdadeiro e informacao falsa. */
+    e.visto_em = c.visto_ha === null ? null : t - c.visto_ha;
+    /* A decisao de "esta chamando" e do servidor, que ja aplicou o limiar. */
+    e.chamando_desde = (c.modo === "chamando" && c.espera !== null)
+                       ? t - c.espera : null;
+    e.modoServidor = c.modo;
+    /* O servidor so manda a cesta enquanto a sessao do cliente esta aberta;
+       fora dela vem lista vazia e a celula nao tem o que mostrar mesmo que
+       quisesse. `item` continua vindo junto (o mais recente) para o caso de
+       um tablet com a pagina antiga em cache. */
+    e.item = c.item;
+    e.itens = c.itens || null;
+    e.itens_lidos = c.itens_lidos || 0;
+    /* Categoria da falha de equipamento; o texto do visor nunca vem. */
+    e.falha = c.falha || null;
+    /* Bebida alcoolica no vale: finalizadora + itens, so com alerta aceso. */
+    e.alcool_vale = c.alcool_vale || null;
+    e.congelado = c.congelado
+      ? {por: c.congelado.por, desde: t - c.congelado.ha,
+         ate: t + c.congelado.resta}
+      : null;
+    e.papel_baixo = !!c.papel_baixo;
+    /* "sem papel" que envelheceu: continua sendo dito, sem gritar. */
+    e.papel_velho_ha = (c.papel_velho_ha === undefined) ? null : c.papel_velho_ha;
+    e.falha_desde = (c.falha_ha === null || c.falha_ha === undefined)
+                      ? null : t - c.falha_ha;
+    e.console = c.console;
+    e.volume = c.volume;
+    e.erro = c.erro;
+  });
+
+  /* A escolha do fiscal so vale para caixa que o servidor conhece. Caixa que
+     saiu da lista tem de sair da grade — senao a tela continua exibindo um
+     PDV do qual ninguem mais recebe nada, com a aparencia de quem esta bem.
+     Foi exatamente o que aconteceu no primeiro teste: o servidor mandou
+     221-224 e a grade seguiu mostrando 201-208, semeados localmente. */
+  var conhecidos = {};
+  CAIXAS.forEach(function(x){ conhecidos[x.n] = 1; });
+  escolhidos = escolhidos.filter(function(n){ return conhecidos[n]; });
+  for(var i = 0; i < CAIXAS.length && escolhidos.length < 4; i++){
+    if(escolhidos.indexOf(CAIXAS[i].n) === -1) escolhidos.push(CAIXAS[i].n);
+  }
+  janelaVista = t;
+}
+
+function entraModoReal(){
+  if(modoReal) return;
+  modoReal = true;
+  var selo = document.getElementById("selo-previa");
+  if(selo) selo.parentNode.removeChild(selo);
+  document.getElementById("banca").style.display = "none";
+  document.getElementById("abrir-banca").style.display = "none";
+}
+
+function buscaServidor(){
+  var x = new XMLHttpRequest();
+  x.open("GET", "api/estado?t=" + Date.now(), true);
+  x.setRequestHeader("X-MF-Token", token || "");
+  x.timeout = 8000;
+  /* 401 = a sessao morreu (servidor reiniciado, por exemplo). Voltar a pedir o
+     PIN e a unica resposta honesta: continuar desenhando o ultimo estado seria
+     a tela mentindo sobre dados que ela nao pode mais ver. */
+  var tinha = token;
+  x.onreadystatechange = function(){
+    /* So diz que EXPIROU se havia sessao. Sem isso, qualquer 401 -- inclusive
+       o de quem nunca entrou -- vira um aviso de expiracao que nao aconteceu. */
+    if(x.readyState === 4 && x.status === 401){
+      tranca(tinha ? "a sessão expirou" : "");
+    }
+  };
+  x.onload = function(){
+    var d = null;
+    try { d = JSON.parse(x.responseText); } catch(e){ d = null; }
+    if(d && d.caixas){
+      entraModoReal();
+      falhasSeguidas = 0;
+      aplicaServidor(d);
+      desenha();
+    } else {
+      perdeuServidor();
+    }
+  };
+  x.onerror = x.ontimeout = perdeuServidor;
+  x.send();
+}
+
+/* Servidor fora do ar e a pior falha possivel: o painel fica bonito e cego.
+   Nao mexemos em `janelaVista`, entao o "atualizado ha X" no cabecalho
+   envelhece sozinho e vira o aviso vermelho — e as celulas caem em
+   "sem sinal" pelo mesmo mecanismo. Nao existe caminho para a tela
+   continuar verde. */
+function perdeuServidor(){
+  falhasSeguidas++;
+  if(!modoReal) return;
+  /* Se o proprio coletor morreu, o veredito dele ENVELHECE e nao pode
+     continuar valendo: sem isto as celulas ficariam congeladas no ultimo
+     modo conhecido, com cara de quem esta bem. Passadas 3 tentativas o
+     cliente descarta o veredito e volta a julgar pelo relogio, que envelhece
+     sozinho ate "sem sinal". Painel cego nao pode parecer calmo. */
+  if(falhasSeguidas >= 3){
+    for(var k in estado) if(estado[k]) estado[k].modoServidor = null;
+  }
+  desenha();
+}
+
+/* ---------- de onde vem o atraso percebido em campo ----------
+   Sao tres parcelas somadas:
+     1. ~1 s inerente a FONTE — o venditor grava um bloco por segundo.
+        Isso nao da para reduzir daqui.
+     2. o coletor entrega em ~0,3 s (medido) — ja e desprezivel.
+     3. o painel perguntava de segundo em segundo, somando ate mais 1 s.
+   A parcela 3 e a unica que estava na nossa mao: passou para 500 ms, o que
+   corta metade do atraso controlavel. O piso de ~1 s e da maquina. */
+var meioSegundo = 0;
+
+function ciclo(){
+  /* Trancado, o painel nao pergunta nada: sem token a API recusa, e insistir
+     so encheria o log de 401. */
+  if(token === null) return;
+  meioSegundo++;
+  if(modoReal){ buscaServidor(); return; }
+  /* Na banca de prova o simulador continua no ritmo de 1 s: as
+     probabilidades dele foram calibradas por segundo, e rodar em dobro
+     mudaria o comportamento simulado. */
+  if(meioSegundo % 2) return;
+  falhasSeguidas++;
+  if(falhasSeguidas % 10 === 0) buscaServidor();
+  tique();
+}
+
+/* NAO pergunta nada na carga: o painel nasce trancado, e a primeira pergunta
+   sai depois do PIN. Perguntar antes rendia um 401 na hora de abrir e a tranca
+   dizia "a sessao expirou" para quem tinha acabado de chegar -- mensagem falsa
+   logo no primeiro contato. */
+desenha();
+setInterval(ciclo, 500);
+</script>
+</body>
+</html>

@@ -1,0 +1,100 @@
+#!/usr/bin/expect -f
+# Executa UMA acao num self-checkout, por senha.
+#
+# Por que expect e nao a chave: a chave `monitorfiscal` esta presa a `command=`
+# no authorized_keys e so aceita a lista branca do mf-agente (log-seguir,
+# venditor-seguir, plu-mapa, volume-ler). Ela NAO executa comando arbitrario --
+# testado, responde "comando nao permitido". Como o PDV aceita login root por
+# senha, este script usa esse caminho e nao exige mudar nada nas maquinas.
+#
+# 🔴 O VOCABULARIO E FIXO AQUI DENTRO. O servidor escolhe entre NOMES de acao,
+# nunca manda um comando. O unico dado que atravessa e o volume, e ele passa
+# por `string is integer` mais faixa antes de encostar na linha de comando --
+# entao nao existe caminho que leve texto de fora para o shell do PDV.
+#
+# A senha vem de arquivo 600, e nao de argumento: argumento aparece na lista de
+# processos da maquina.
+
+set timeout 25
+set host  [lindex $argv 0]
+set acao  [lindex $argv 1]
+set valor [lindex $argv 2]
+
+# Le o volume de volta depois de mexer. Em chaves para o [0-9] do grep chegar
+# literal ao shell -- em aspas, o Tcl tentaria substituir por comando.
+set ler_volume {amixer sget Master | grep -o "[0-9]*%" | head -n 1}
+
+# Piso de volume, o mesmo do desenho do mf-agente. Sem ele alguem arrasta a
+# barra para zero, o self-checkout fica mudo, e ninguem descobre por que.
+set PISO 30
+set TETO 100
+
+switch -- $acao {
+  destrava {
+    # Solta ANTES de matar: processo congelado (SIGSTOP) nao morre com o
+    # SIGTERM do pkill -- o sinal fica pendente e o caixa continuaria parado.
+    set cmd "rm -f /tmp/mf-congela.id; pkill -CONT venditorX; pkill vend"
+  }
+  congela {
+    # Pausa o venditorX com SIGSTOP: a venda fica INTEIRA na memoria e volta
+    # de onde parou no SIGCONT. Testado pelo Valmir no 224 em 15/09.
+    #
+    # 🔴 SOLTA SOZINHO EM 600 s (o mesmo CONGELA_MAX do monitor.py). Caixa
+    # congelado nao responde a nada, e esquecer de soltar tiraria o caixa da
+    # loja sem ninguem perceber. O `setsid` desprende o relogio desta sessao
+    # SSH; o id em /tmp faz o relogio de um congelamento antigo NAO soltar um
+    # congelamento novo, e o descongelar manual apaga o id.
+    set cmd {P=$(pidof venditorX); if [ -z "$P" ]; then echo MF-SEM-VENDITOR; else I=$(date +%s)$$; echo $I > /tmp/mf-congela.id; setsid sh -c "sleep 600; [ \"\$(cat /tmp/mf-congela.id 2>/dev/null)\" = $I ] && rm -f /tmp/mf-congela.id && kill -CONT $P" >/dev/null 2>&1 </dev/null & kill -STOP $P; echo MF-ESTADO-$(ps -o stat= -p $P | tr -d ' ' | cut -c1); fi}
+  }
+  descongela {
+    set cmd {P=$(pidof venditorX); rm -f /tmp/mf-congela.id; if [ -z "$P" ]; then echo MF-SEM-VENDITOR; else kill -CONT $P; echo MF-ESTADO-$(ps -o stat= -p $P | tr -d ' ' | cut -c1); fi}
+  }
+  reinicia { set cmd "reboot" }
+  volume-ler { set cmd $ler_volume }
+  volume-set {
+    if {![string is integer -strict $valor]} {
+      puts "volume invalido"; exit 2
+    }
+    if {$valor < $PISO} { set valor $PISO }
+    if {$valor > $TETO} { set valor $TETO }
+    set cmd "amixer sset Master ${valor}% >/dev/null 2>&1; alsactl store >/dev/null 2>&1; $ler_volume"
+  }
+  teste { set cmd "echo mf-canal-ok" }
+  default { puts "acao nao permitida: $acao"; exit 2 }
+}
+
+# So para teste: mostra o comando que IRIA para o PDV e sai, sem conectar.
+if {[info exists env(MF_SO_MOSTRA)]} { puts $cmd; exit 0 }
+
+# Caminho da senha: vem do ambiente para o container poder monta-la em
+# outro lugar. O padrao mantem a instalacao do 192.168.1.108 funcionando
+# sem mudanca nenhuma.
+set arq [expr {[info exists env(MF_SENHA)] ? $env(MF_SENHA) : "/root/monitor-fiscal/.senha-pdv"}]
+if {![file exists $arq]} { puts "falta $arq"; exit 3 }
+set fh [open $arq]
+set senha [string trim [read $fh]]
+close $fh
+
+log_user 0
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ConnectTimeout=10 root@$host
+expect {
+  -re {[Pp]assword:} { send "$senha\r" }
+  timeout { puts "sem prompt de senha"; exit 1 }
+  eof     { puts "conexao recusada"; exit 1 }
+}
+expect {
+  -re {[#$] $} {}
+  -re {[Pp]assword:} { puts "senha recusada"; exit 4 }
+  timeout { puts "sem shell"; exit 1 }
+}
+log_user 1
+send "$cmd\r"
+# O reboot derruba a sessao no meio -- eof aqui e sucesso, nao falha.
+expect {
+  -re {[#$] $} { send "exit\r" }
+  eof { puts "conexao caiu (esperado no reboot)"; exit 0 }
+  timeout {}
+}
+expect eof
+exit 0

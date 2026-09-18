@@ -1,0 +1,45 @@
+{
+  "_piloto": "Copie este arquivo para config.json e ajuste os valores abaixo. config.json NAO deve ser versionado (ja esta no .gitignore) porque carrega os PINs de acesso ao painel.",
+
+  "_porta": "Porta que o coletor escuta. Em network_mode host quem decide a porta e este campo -- o mapeamento ports: do compose nao vale.",
+  "porta": 8085,
+  "web": "web",
+
+  "_nomes_sacola": "Mapa de codigos de sacola (vindos do --list-items do ftself) para o nome exibido no painel, ja que esses codigos nao estao no PLU exportado.",
+  "nomes_sacola": {
+    "7899498703011": "SACOLA VERDE 48X55",
+    "7898257751348": "SACOLA CINZA 48X55"
+  },
+
+  "maquinas": [
+    { "pdv": 221, "host": "192.168.1.121" },
+    { "pdv": 222, "host": "192.168.1.122" },
+    { "pdv": 223, "host": "192.168.1.123" },
+    { "pdv": 224, "host": "192.168.1.124" }
+  ],
+
+  "_usuario": "Usuario SSH usado para conectar nas maquinas. O desenho definitivo e o usuario monitorfiscal (docs/pedido-ti.md), restrito por command= a lista branca do mf-agente.",
+  "usuario": "monitorfiscal",
+  "chave": "/root/.ssh/monitorfiscal",
+  "known_hosts": "/root/.ssh/known_hosts",
+
+  "_strict_host_key": "no' so durante o piloto, para as maquinas entrarem no known_hosts na primeira conexao. Voltar para 'yes' quando o parque estiver estavel.",
+  "strict_host_key": "yes",
+
+  "_cmd_log": "Precisa bater com o command= do authorized_keys da chave monitorfiscal.",
+  "cmd_log": "log-seguir",
+
+  "limiar_sem_sinal": 15,
+  "limiar_alerta": 0,
+
+  "_limiar_papel": "Quantos segundos a ultima leitura de papel continua valendo como AFIRMACAO antes de virar aviso de leitura velha. Veja o README para o raciocinio por tras do valor.",
+  "limiar_papel": 90,
+
+  "_pins_digitaveis": "PINs que podem ser DIGITADOS no teclado da tela, alem de passados pelo leitor de cracha.",
+  "pins_digitaveis": ["CHANGE_ME_PIN"],
+
+  "_pin_acoes": "Um PIN por pessoa autorizada a abrir o painel, com um rotulo para aparecer no log. Troque os valores abaixo pelos PINs reais antes de subir.",
+  "pin_acoes": {
+    "CHANGE_ME_PIN": "CHANGE_ME_PIN (geral)"
+  }
+}

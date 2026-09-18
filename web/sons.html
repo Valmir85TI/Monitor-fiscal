@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Monitor Fiscal — escolher o alerta</title>
+<!--
+  BANCA DE SOM. Existe para o alerta ser escolhido OUVINDO no tablet que vai
+  ficar na loja, e nao por descricao em texto: o alto-falante do tablet e o
+  barulho do salao mudam completamente o que funciona.
+
+  Nao faz parte do painel. Quando o som estiver escolhido, esta pagina pode
+  ficar (nao atrapalha, so e servida em /sons.html) ou ser apagada.
+
+  Cada opcao aqui e a MESMA funcao que vai para o painel -- se soar bem aqui,
+  soa igual la.
+-->
+<style>
+:root{
+  --castanha:#CC1F1F; --noite:#1A1008; --cinza-quente:#3D3328;
+  --papel:#FBF8F4; --branco:#fff; --linha:#E7E0D6;
+  --ok:#1F7A4D; --mudo:#9A9086; --mudo-fraco:#F2EEE8;
+}
+*{box-sizing:border-box}
+html,body{margin:0; background:var(--papel); color:var(--noite);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+header{background:var(--castanha); color:#fff; padding:14px 18px}
+header h1{margin:0; font-size:18px; font-weight:600}
+header p{margin:4px 0 0; font-size:13px; opacity:.9}
+main{padding:16px; max-width:760px; margin:0 auto}
+
+.destrava{
+  display:block; width:100%; margin:0 0 18px; padding:18px;
+  background:var(--noite); color:#fff; border:0; border-radius:12px;
+  font-size:17px; font-weight:700; font-family:inherit; cursor:pointer;
+}
+.destrava.pronto{background:var(--ok)}
+
+.volume{background:var(--branco); border:1px solid var(--linha);
+  border-radius:12px; padding:14px 16px; margin-bottom:18px}
+.volume label{font-size:14px; font-weight:600; display:block; margin-bottom:10px}
+.volume input{width:100%; height:38px}
+.volume .val{font-variant-numeric:tabular-nums; font-weight:700}
+.volume .nota{font-size:12.5px; color:var(--cinza-quente); margin-top:8px; line-height:1.45}
+
+.som{background:var(--branco); border:1px solid var(--linha); border-radius:12px;
+  padding:14px 16px; margin-bottom:12px; display:flex; align-items:center; gap:14px}
+.som .txt{flex:1; min-width:0}
+.som .nome{font-size:16px; font-weight:700}
+.som .desc{font-size:13px; color:var(--cinza-quente); margin-top:3px; line-height:1.4}
+.som button{
+  flex:0 0 auto; min-width:92px; min-height:56px; border:0; border-radius:10px;
+  background:var(--castanha); color:#fff; font-size:15px; font-weight:700;
+  font-family:inherit; cursor:pointer;
+}
+.som.atual{border-color:var(--ok); box-shadow:inset 0 0 0 1px var(--ok)}
+.som .tag{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.6px;
+  background:var(--ok); color:#fff; padding:2px 7px; border-radius:99px; margin-left:8px;
+  vertical-align:2px}
+
+.escada{background:var(--mudo-fraco); border-radius:12px; padding:14px 16px; margin:18px 0}
+.escada h2{margin:0 0 4px; font-size:15px}
+.escada p{margin:0 0 12px; font-size:13px; color:var(--cinza-quente); line-height:1.45}
+.escada .linha{display:flex; gap:8px; flex-wrap:wrap}
+.escada button{flex:1 1 0; min-width:70px; min-height:52px; border:0; border-radius:10px;
+  color:#fff; font-size:14px; font-weight:700; font-family:inherit; cursor:pointer}
+.n0{background:#E8443A} .n1{background:#CC1F1F} .n2{background:#991515} .n3{background:#6B0E0E}
+
+.rodape{font-size:13px; color:var(--cinza-quente); line-height:1.55; margin-top:22px;
+  border-top:1px solid var(--linha); padding-top:14px}
+code{background:var(--mudo-fraco); padding:1px 5px; border-radius:4px; font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Escolher o alerta do Monitor Fiscal</h1>
+  <p>Ouça no tablet que vai ficar na loja, com o salão no barulho de sempre.</p>
+</header>
+
+<main>
+  <button class="destrava" id="destrava">Tocar aqui primeiro para liberar o som</button>
+
+  <div class="volume">
+    <label>Volume <span class="val" id="vval">1.5</span>
+      <span style="font-weight:400; color:var(--cinza-quente)"> — acima de 1.6 distorce</span>
+    </label>
+    <input type="range" id="vol" min="0.2" max="2" step="0.1" value="1.5">
+    <div class="nota">
+      O volume do sistema tem de estar no máximo também. Se mesmo em 1.6 ficar
+      baixo, o limite é o alto-falante do tablet, não o software.
+    </div>
+  </div>
+
+  <div class="som atual" data-som="bip">
+    <div class="txt">
+      <div class="nome">Bip duplo <span class="tag">ATUAL</span></div>
+      <div class="desc">Dois toques secos de onda quadrada. Seco e neutro, não parece
+        emergência médica.</div>
+    </div>
+    <button data-toca="bip">Ouvir</button>
+  </div>
+
+  <div class="som" data-som="sirene">
+    <div class="txt">
+      <div class="nome">Sirene curta</div>
+      <div class="desc">Varredura de frequência subindo e descendo. É o que mais
+        atravessa barulho de salão — e o que mais incomoda se tocar muito.</div>
+    </div>
+    <button data-toca="sirene">Ouvir</button>
+  </div>
+
+  <div class="som" data-som="doistons">
+    <div class="txt">
+      <div class="nome">Dois tons alternados</div>
+      <div class="desc">Tipo interfone. Chama atenção sem soar como alarme de
+        incêndio.</div>
+    </div>
+    <button data-toca="doistons">Ouvir</button>
+  </div>
+
+  <div class="som" data-som="carrilhao">
+    <div class="txt">
+      <div class="nome">Carrilhão</div>
+      <div class="desc">Três notas em acorde, mais suave. Bom se o alerta tocar
+        muitas vezes por dia e o vermelho já estiver dando o recado.</div>
+    </div>
+    <button data-toca="carrilhao">Ouvir</button>
+  </div>
+
+  <div class="som" data-som="rajada">
+    <div class="txt">
+      <div class="nome">Rajada</div>
+      <div class="desc">Quatro toques rápidos. O mais urgente sem virar sirene.</div>
+    </div>
+    <button data-toca="rajada">Ouvir</button>
+  </div>
+
+  <div class="som" data-som="voz">
+    <div class="txt">
+      <div class="nome">Voz falando o caixa</div>
+      <div class="desc">Diz “caixa 221” em voz alta. O fiscal sabe PARA ONDE ir sem
+        olhar a tela. Depende do Android ter voz em português instalada — se sair
+        mudo ou em inglês, é isso.</div>
+    </div>
+    <button data-toca="voz">Ouvir</button>
+  </div>
+
+  <div class="escada">
+    <h2>A escada de urgência</h2>
+    <p>O alerta muda com o tempo de espera: mais grave e mais frequente conforme
+      o cliente fica parado. Toque em cada degrau para ouvir a diferença — use o
+      som que você estiver considerando.</p>
+    <div class="linha">
+      <button class="n0" data-nivel="0">0 · novo</button>
+      <button class="n1" data-nivel="1">1</button>
+      <button class="n2" data-nivel="2">2</button>
+      <button class="n3" data-nivel="3">3 · 60 s</button>
+    </div>
+  </div>
+
+  <div class="rodape">
+    <strong>Quer usar um som seu?</strong> Dá para pôr um arquivo (<code>.mp3</code>,
+    <code>.ogg</code> ou <code>.wav</code>) na pasta <code>web/</code> e apontar
+    <code>SOM_ARQUIVO</code> no <code>index.html</code> para ele — o gerador de tons
+    sai de cena e o arquivo passa a tocar. Me diga o nome do arquivo que eu ligo.
+    <br><br>
+    Escolheu? Me diga qual, que eu levo para o painel e apago esta página.
+  </div>
+</main>
+
+<script>
+/* ------------------------------------------------------------------
+   Os geradores. `nivel` 0 a 3 e a escada de urgencia do painel: quanto
+   mais tempo o cliente espera, mais grave e mais insistente.
+
+   As frequencias ficam TODAS entre 1,9 e 2,8 kHz de proposito. Alto-falante
+   de tablet e pequeno e sem caixa: rende bem de ~1,5 kHz para cima e despenca
+   abaixo disso. O alerta antigo usava 880-660 Hz e por isso saia quase
+   inaudivel mesmo com o volume no maximo.
+   ------------------------------------------------------------------ */
+var ctx = null, VOL = 1.5;
+
+function pronto(){
+  if(!ctx){
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return null;
+    ctx = new AC();
+  }
+  if(ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+
+/* Compressor + ganho de saida: deixa usar quase a escala toda sem a onda
+   quadrada estourar em distorcao suja. Medido: com VOL 1.5 o pico fica em
+   0.90; de 1.8 para cima corta. */
+function cadeia(c){
+  var comp = c.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.knee.value = 6; comp.ratio.value = 12;
+  comp.attack.value = 0.002; comp.release.value = 0.10;
+  var out = c.createGain(); out.gain.value = VOL;
+  comp.connect(out); out.connect(c.destination);
+  return comp;
+}
+
+function pulso(c, destino, t, freq, dur, tipo, pico){
+  /* `pico` desce quando varias notas soam JUNTAS: amplitude soma, e tres notas
+     a 0.9 davam 1.03 no medidor -- estouro de verdade, com amostras no teto.
+     O compressor tem ataque de 2 ms e nao pega o transiente inteiro. */
+  pico = pico || 0.9;
+  var o = c.createOscillator(), g = c.createGain();
+  o.type = tipo || "square";
+  o.frequency.value = freq;
+  o.connect(g); g.connect(destino);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(pico, t + 0.008);
+  g.gain.setValueAtTime(pico, t + dur - 0.045);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.start(t); o.stop(t + dur + 0.01);
+}
+
+var SONS = {
+  bip: function(c, nivel){
+    var d = cadeia(c), t0 = c.currentTime;
+    var f = [2800, 2500, 2200, 1900][nivel];
+    var n = nivel >= 3 ? 3 : 2;
+    for(var i = 0; i < n; i++) pulso(c, d, t0 + i * 0.17, f, 0.145);
+  },
+
+  sirene: function(c, nivel){
+    var d = cadeia(c), t0 = c.currentTime;
+    var base = [2400, 2200, 2000, 1800][nivel];
+    var voltas = nivel >= 2 ? 3 : 2;
+    var o = c.createOscillator(), g = c.createGain();
+    o.type = "sawtooth";
+    o.connect(g); g.connect(d);
+    o.frequency.setValueAtTime(base, t0);
+    var t = t0;
+    for(var i = 0; i < voltas; i++){
+      o.frequency.linearRampToValueAtTime(base * 1.6, t + 0.16);
+      o.frequency.linearRampToValueAtTime(base, t + 0.32);
+      t += 0.32;
+    }
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.85, t0 + 0.02);
+    g.gain.setValueAtTime(0.85, t - 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t);
+    o.start(t0); o.stop(t + 0.02);
+  },
+
+  doistons: function(c, nivel){
+    var d = cadeia(c), t0 = c.currentTime;
+    var a = [2600, 2400, 2200, 2000][nivel], b = a * 0.75;
+    var voltas = nivel >= 2 ? 3 : 2;
+    for(var i = 0; i < voltas; i++){
+      pulso(c, d, t0 + i * 0.44, a, 0.20);
+      pulso(c, d, t0 + i * 0.44 + 0.22, b, 0.20);
+    }
+  },
+
+  carrilhao: function(c, nivel){
+    var d = cadeia(c), t0 = c.currentTime;
+    /* triade; desce de tom conforme a urgencia sobe */
+    var base = [2640, 2400, 2200, 1980][nivel];
+    var notas = [base, base * 1.25, base * 1.5];
+    for(var i = 0; i < notas.length; i++){
+      pulso(c, d, t0 + i * 0.13, notas[i], 0.30, "triangle", 0.4);
+    }
+  },
+
+  rajada: function(c, nivel){
+    var d = cadeia(c), t0 = c.currentTime;
+    var f = [2800, 2600, 2300, 2000][nivel];
+    var n = 4 + (nivel >= 2 ? 2 : 0);
+    for(var i = 0; i < n; i++) pulso(c, d, t0 + i * 0.09, f, 0.07);
+  },
+
+  voz: function(c, nivel){
+    /* Fala o numero do caixa. Aqui na banca e um exemplo fixo; no painel seria
+       o PDV que esta chamando de verdade. */
+    if(!("speechSynthesis" in window)){
+      alert("Este navegador nao tem voz. As outras opcoes funcionam.");
+      return;
+    }
+    var f = new SpeechSynthesisUtterance(
+      nivel >= 3 ? "Caixa 221, urgente" : "Caixa 221");
+    f.lang = "pt-BR";
+    f.volume = 1;
+    f.rate = nivel >= 3 ? 1.15 : 1;
+    f.pitch = 1;
+    speechSynthesis.cancel();
+    speechSynthesis.speak(f);
+    /* um bip curto antes ajuda a pessoa a "pegar" a frase desde o comeco */
+    SONS.bip(c, nivel);
+  }
+};
+
+var somAtual = "bip";
+
+function toca(nome, nivel){
+  var c = pronto();
+  if(!c){ alert("Este navegador nao suporta o gerador de som."); return; }
+  somAtual = nome;
+  document.querySelectorAll(".som").forEach(function(el){
+    el.classList.toggle("atual", el.getAttribute("data-som") === nome);
+  });
+  SONS[nome](c, nivel || 0);
+}
+
+document.getElementById("destrava").onclick = function(){
+  var c = pronto();
+  this.textContent = c ? "Som liberado — pode ouvir as opções" : "Som não disponível";
+  this.classList.add("pronto");
+  if(c) SONS.bip(c, 0);
+};
+
+document.querySelectorAll("[data-toca]").forEach(function(b){
+  b.onclick = function(){ toca(b.getAttribute("data-toca"), 0); };
+});
+
+document.querySelectorAll("[data-nivel]").forEach(function(b){
+  b.onclick = function(){ toca(somAtual, parseInt(b.getAttribute("data-nivel"), 10)); };
+});
+
+var vol = document.getElementById("vol"), vval = document.getElementById("vval");
+vol.oninput = function(){ VOL = parseFloat(vol.value); vval.textContent = VOL.toFixed(1); };
+</script>
+</body>
+</html>

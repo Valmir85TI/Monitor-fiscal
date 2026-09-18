@@ -1,0 +1,77 @@
+# Monitor Fiscal — coletor + API + painel, num container só.
+#
+#   docker compose up -d --build
+#
+# 🔴 ESTE CONTAINER PRECISA ALCANÇAR A REDE DOS PDVs (192.168.1.121 a .124),
+# e ele vive em 192.168.0.50 — outra faixa. É a única coisa que pode impedir a
+# mudança, e não depende deste arquivo. Teste ANTES de subir:
+#
+#   ssh -o ConnectTimeout=5 root@192.168.1.121 true; echo $?
+#
+# Se o host não alcançar, o container também não vai: a saída dele passa pelo
+# NAT do host. Nesse caso, o caminho é rota/firewall entre as duas faixas —
+# não adianta mexer no compose.
+services:
+  monitor-fiscal:
+    build: .
+    image: castanha-ti/monitor-fiscal:latest
+    container_name: monitor-fiscal
+    restart: unless-stopped
+
+    # 🔴 SEM REDE PROPRIA, de proposito. Na primeira tentativa o compose
+    # falhou com "all predefined address pools have been fully subnetted": este
+    # host tem ~25 projetos em /opt, cada compose criando sua rede `_default`, e
+    # os blocos de IP do Docker acabaram. Criar mais uma rede aqui nao ia
+    # funcionar por mais que a imagem estivesse certa -- e ela estava, construiu
+    # 7/7.
+    #
+    # `network_mode: host` e a saida que os vizinhos ja usam (Pizza,
+    # AcougueSenha, checklist-front, metabase-vpn): nao cria rede nenhuma.
+    # A alternativa seria mexer nos address pools do daemon em
+    # /etc/docker/daemon.json, mas isso exige reiniciar o Docker do host --
+    # derrubaria TODOS os outros projetos junto, para resolver um.
+    #
+    # Consequencia que anda junto: em host mode o mapeamento `ports:` nao vale.
+    # Quem decide a porta e o proprio coletor, pelo "porta" do config.json, que
+    # por isso foi para 8085 -- 8080 e do Apache deste host.
+    #
+    # De brinde, sai o NAT: a saida SSH ate os PDVs passa a ser direta, com a
+    # pilha de rede do host.
+    network_mode: host
+
+    environment:
+      TZ: America/Sao_Paulo
+      # O acao-pdv.exp lê a senha daqui. Fora do container o padrão dele é
+      # /root/monitor-fiscal/.senha-pdv, que é onde ela está no 192.168.1.108.
+      MF_SENHA: /run/secrets/senha-pdv
+
+    volumes:
+      # Config e segredos entram por volume, NUNCA na imagem: imagem circula,
+      # é copiada e fica em registry. Senha e chave privada não podem ir junto.
+      - ./config.json:/app/config.json:ro
+      - ./known_hosts:/app/known_hosts:ro
+      - ./monitorfiscal.key:/run/secrets/monitorfiscal:ro
+      - ./.senha-pdv:/run/secrets/senha-pdv:ro
+      # O catálogo PLU é cache: o coletor refaz sozinho se sumir, mas manter
+      # poupa ~46 mil itens de download a cada restart do container.
+      - ./plu-cache.tsv:/app/plu-cache.tsv
+
+    healthcheck:
+      # /api/saude, e não /api/estado: o estado exige sessão desde que o painel
+      # ganhou PIN, e um healthcheck sem token levaria 401 para sempre — o
+      # compose reiniciaria um container que está perfeitamente bem.
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8085/api/saude',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      # O coletor escreve pouco, mas fica meses no ar. Sem limite, o log do
+      # Docker cresce até encher o disco do host — que é compartilhado com
+      # todos os outros projetos de /opt.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
